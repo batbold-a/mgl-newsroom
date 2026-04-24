@@ -6,10 +6,12 @@ import os
 from datetime import datetime, timezone
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
-BOT_TOKEN      = os.environ.get("BOT_TOKEN")
-PAID_CHANNEL   = os.environ.get("PAID_CHANNEL", "@mgl_newsroom")
-ADMIN_CHAT_ID  = os.environ.get("ADMIN_CHAT_ID")
-ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY")
+BOT_TOKEN         = os.environ.get("BOT_TOKEN")
+FREE_CHANNEL      = os.environ.get("FREE_CHANNEL",    "@mgl_newsroom")
+PREMIUM_CHANNEL   = os.environ.get("PREMIUM_CHANNEL", "@mgl_newsroom")  # set via Railway var
+PREMIUM_INVITE    = "https://t.me/+BxQ8PEdcyc02YmM9"                    # private channel invite
+ADMIN_CHAT_ID     = os.environ.get("ADMIN_CHAT_ID")
+ANTHROPIC_KEY     = os.environ.get("ANTHROPIC_API_KEY")
 
 DISCLAIMER = "\n\n⚠️ Энэхүү мэдээлэл нь хөрөнгө оруулалтын зөвлөгөө биш."
 
@@ -94,11 +96,10 @@ def send(chat_id, text, markup=None):
 def answer_cb(cb_id, text):
     tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
 
-# ── CLAUDE AI — Mongolian summary + analysis ───────────────────────────────────
+# ── CLAUDE AI ──────────────────────────────────────────────────────────────────
 def generate_mongolian_summary(title, summary, source):
-    """Call Claude API to write a proper Mongolian summary with investor analysis."""
     if not ANTHROPIC_KEY:
-        return title + " (AI тайлбар байхгүй — ANTHROPIC_API_KEY тохируулаагүй)"
+        return f"TITLE: {title}\nSUMMARY: (AI disabled)\nANALYSIS: Add ANTHROPIC_API_KEY in Railway."
 
     prompt = f"""You are a financial news editor for a Mongolian investment channel.
 
@@ -108,13 +109,13 @@ Source: {source}
 
 Write a response in this EXACT format in Mongolian:
 
-TITLE: [Translate the title naturally into Mongolian — not word for word, make it sound like a real Mongolian news headline]
+TITLE: [Translate the title naturally into Mongolian — sound like a real Mongolian news headline]
 
-SUMMARY: [Write 2-3 sentences in Mongolian explaining what happened and why it matters. Use simple, clear Mongolian that anyone can understand. No jargon.]
+SUMMARY: [2-3 sentences in simple clear Mongolian explaining what happened and why it matters]
 
-ANALYSIS: [Write 1-2 sentences explaining what this means specifically for Mongolian investors — how does this affect MSE stocks, the tugrug, commodity prices, or Mongolian businesses?]
+ANALYSIS: [1-2 sentences explaining what this means specifically for Mongolian investors — MSE stocks, tugrug, commodity prices, or Mongolian businesses]
 
-Write ONLY the Mongolian content. No English. No explanations."""
+Write ONLY Mongolian content. No English. No extra explanation."""
 
     try:
         r = requests.post(
@@ -131,21 +132,15 @@ Write ONLY the Mongolian content. No English. No explanations."""
             },
             timeout=30
         )
-        result = r.json()
-        return result["content"][0]["text"].strip()
+        return r.json()["content"][0]["text"].strip()
     except Exception as e:
         print(f"[CLAUDE ERROR] {e}")
-        return title + " (AI тайлбар алдаа гарлаа)"
+        return f"TITLE: {title}\nSUMMARY: AI алдаа гарлаа.\nANALYSIS:"
 
 def parse_ai_response(ai_text):
-    """Parse Claude's structured response into title, summary, analysis."""
-    lines = ai_text.strip().split("\n")
-    title_mn   = ""
-    summary_mn = ""
-    analysis_mn = ""
-
+    title_mn = summary_mn = analysis_mn = ""
     current = None
-    for line in lines:
+    for line in ai_text.strip().split("\n"):
         line = line.strip()
         if line.startswith("TITLE:"):
             title_mn = line.replace("TITLE:", "").strip()
@@ -160,51 +155,60 @@ def parse_ai_response(ai_text):
             summary_mn += " " + line
         elif line and current == "analysis":
             analysis_mn += " " + line
-
     return title_mn.strip(), summary_mn.strip(), analysis_mn.strip()
 
-# ── FORMAT ─────────────────────────────────────────────────────────────────────
-def get_schedule_tag(is_breaking=False):
+# ── SCHEDULE ───────────────────────────────────────────────────────────────────
+def get_tag(is_breaking=False):
     if is_breaking:
         return "🚨", "Breaking News", "Яаралтай мэдээ"
-    day = datetime.now(timezone.utc).weekday()
-    return SCHEDULE.get(day, ("📰", "News", "Мэдээ"))
+    return SCHEDULE.get(datetime.now(timezone.utc).weekday(),
+                        ("📰", "News", "Мэдээ"))
 
-def build_channel_post(article):
-    """Build the final English + Mongolian post for the channel."""
-    emoji, label_en, label_mn = get_schedule_tag(article.get("is_breaking", False))
+# ── FORMAT POSTS ───────────────────────────────────────────────────────────────
+def build_premium_post(article):
+    """Full AI post for premium private channel — English + Mongolian."""
+    emoji, label_en, label_mn = get_tag(article.get("is_breaking", False))
 
-    # English post — clean headline + link
-    en_post = (
+    en = (
         f"{emoji} <b>{label_en}</b>\n\n"
         f"<b>{article['title_en']}</b>\n\n"
         f"🔗 {article['link']}\n"
         f"<i>via {article['source']}</i>"
     )
 
-    # Mongolian post — AI title + summary + analysis
-    mn_parts = [f"{emoji} <b>{label_mn}</b>\n\n"]
+    mn = (
+        f"{emoji} <b>{label_mn}</b>\n\n"
+        f"<b>{article.get('title_mn', article['title_en'])}</b>\n\n"
+        f"{article.get('summary_mn', '')}\n\n"
+        f"💡 <i>{article.get('analysis_mn', '')}</i>\n\n"
+        f"🔗 {article['link']}\n"
+        f"<i>{article['source']}-аас</i>"
+        f"{DISCLAIMER}"
+    )
+    return en, mn
 
-    if article.get("title_mn"):
-        mn_parts.append(f"<b>{article['title_mn']}</b>\n\n")
-    if article.get("summary_mn"):
-        mn_parts.append(f"{article['summary_mn']}\n\n")
-    if article.get("analysis_mn"):
-        mn_parts.append(f"💡 <i>{article['analysis_mn']}</i>\n\n")
+def build_free_teaser(article):
+    """Short teaser for free public channel — drives upgrades to premium."""
+    emoji, _, label_mn = get_tag(article.get("is_breaking", False))
+    teaser_text = article.get('summary_mn', '')[:120]
 
-    mn_parts.append(f"🔗 {article['link']}\n")
-    mn_parts.append(f"<i>{article['source']}-аас</i>")
-    mn_parts.append(DISCLAIMER)
-
-    mn_post = "".join(mn_parts)
-    return en_post, mn_post
+    return (
+        f"{emoji} <b>{article.get('title_mn', article['title_en'])}</b>\n\n"
+        f"{teaser_text}...\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔒 <b>Дэлгэрэнгүй шинжилгээ Premium сувгаас</b>\n\n"
+        f"✅ Бүтэн мэдээ + хөрөнгө оруулалтын шинжилгээ\n"
+        f"✅ Монгол хэл дээр AI тайлбар\n"
+        f"✅ Өдөр бүрийн зах зээлийн мэдээлэл\n\n"
+        f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>"
+    )
 
 def build_admin_preview(article):
-    """Full preview card for admin — shows AI-generated content."""
-    emoji, label_en, _ = get_schedule_tag(article.get("is_breaking", False))
+    """Full preview for admin approval."""
+    emoji, label_en, _ = get_tag(article.get("is_breaking", False))
     tag = "🚨 BREAKING" if article.get("is_breaking") else f"{emoji} {label_en}"
 
-    preview = (
+    return (
         f"<b>New article — {tag}</b>\n\n"
         f"🇬🇧 <b>{article['title_en']}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -215,49 +219,83 @@ def build_admin_preview(article):
         f"🔗 {article['link']}\n"
         f"<i>via {article['source']}</i>"
     )
-    return preview
 
 def build_edit_template(article):
-    """Editable template sent to admin when they tap Edit."""
-    emoji, label_en, label_mn = get_schedule_tag(article.get("is_breaking", False))
+    """Editable template for admin."""
+    emoji, label_en, label_mn = get_tag(article.get("is_breaking", False))
     return (
-        f"✏️ Copy, edit and send back:\n\n"
-        f"── ENGLISH ──\n"
+        f"✏️ Edit and send back:\n\n"
+        f"── ENGLISH (Premium) ──\n"
         f"{emoji} {label_en}\n\n"
         f"{article['title_en']}\n\n"
         f"🔗 {article['link']}\n"
         f"via {article['source']}\n\n"
-        f"── MONGOLIAN ──\n"
+        f"── MONGOLIAN (Premium) ──\n"
         f"{emoji} {label_mn}\n\n"
         f"{article.get('title_mn', '')}\n\n"
         f"{article.get('summary_mn', '')}\n\n"
         f"💡 {article.get('analysis_mn', '')}\n\n"
         f"🔗 {article['link']}\n"
         f"{article['source']}-аас"
-        f"{DISCLAIMER}"
+        f"{DISCLAIMER}\n\n"
+        f"── FREE TEASER ──\n"
+        f"{emoji} {article.get('title_mn', article['title_en'])}\n\n"
+        f"{article.get('summary_mn', '')[:120]}...\n\n"
+        f"🔒 Дэлгэрэнгүй шинжилгээг Premium сувгаас үзнэ үү\n"
+        f"➡️ MGL Newsroom Premium-д нэгдэх"
     )
 
-# ── POST TO CHANNEL ────────────────────────────────────────────────────────────
-def post_to_channel(en_text, mn_text):
-    send(PAID_CHANNEL, en_text)
-    time.sleep(2)
-    send(PAID_CHANNEL, mn_text)
-    print(f"[POSTED] {PAID_CHANNEL}")
+# ── POST HELPERS ───────────────────────────────────────────────────────────────
+def post_approved(article):
+    """Post full post to premium + teaser to free channel."""
+    en_post, mn_post = build_premium_post(article)
+    teaser = build_free_teaser(article)
 
-def post_custom_to_channel(custom_text):
-    """Post admin-edited text — splits on ── MONGOLIAN ── if present."""
-    if "── MONGOLIAN ──" in custom_text:
-        parts = custom_text.split("── MONGOLIAN ──")
-        en_part = parts[0].replace("── ENGLISH ──", "").strip()
-        mn_part = parts[1].strip() if len(parts) > 1 else ""
+    # Premium channel — English then Mongolian
+    send(PREMIUM_CHANNEL, en_post)
+    time.sleep(2)
+    send(PREMIUM_CHANNEL, mn_post)
+    time.sleep(2)
+
+    # Free channel — Mongolian teaser only
+    send(FREE_CHANNEL, teaser)
+    print(f"[POSTED] Premium + Free teaser")
+
+def post_custom(custom_text):
+    """Post admin-edited text to channels."""
+    if "── MONGOLIAN (Premium) ──" in custom_text:
+        parts = custom_text.split("──")
+        en_part = ""
+        mn_part = ""
+        teaser_part = ""
+        current = None
+        for part in parts:
+            p = part.strip()
+            if "ENGLISH (Premium)" in p:
+                current = "en"
+            elif "MONGOLIAN (Premium)" in p:
+                current = "mn"
+            elif "FREE TEASER" in p:
+                current = "teaser"
+            elif current == "en" and p:
+                en_part = p
+            elif current == "mn" and p:
+                mn_part = p
+            elif current == "teaser" and p:
+                teaser_part = p
+
         if en_part:
-            send(PAID_CHANNEL, en_part)
+            send(PREMIUM_CHANNEL, en_part)
             time.sleep(2)
         if mn_part:
-            send(PAID_CHANNEL, mn_part)
+            send(PREMIUM_CHANNEL, mn_part)
+            time.sleep(2)
+        if teaser_part:
+            send(FREE_CHANNEL, teaser_part)
     else:
-        send(PAID_CHANNEL, custom_text)
-    print(f"[POSTED CUSTOM] {PAID_CHANNEL}")
+        # Free-form — post to premium only
+        send(PREMIUM_CHANNEL, custom_text)
+    print(f"[POSTED CUSTOM]")
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
@@ -291,7 +329,6 @@ def handle_updates():
     for update in updates:
         offset = update["update_id"] + 1
 
-        # Button taps
         cb = update.get("callback_query")
         if cb:
             data = cb.get("data", "")
@@ -305,9 +342,8 @@ def handle_updates():
                 continue
 
             if action == "agree":
-                en_post, mn_post = build_channel_post(art)
-                post_to_channel(en_post, mn_post)
-                answer_cb(cb["id"], "✅ Posted!")
+                post_approved(art)
+                answer_cb(cb["id"], "✅ Posted to both channels!")
                 tg("editMessageText", {
                     "chat_id":    ADMIN_CHAT_ID,
                     "message_id": art.get("preview_msg_id"),
@@ -318,8 +354,7 @@ def handle_updates():
                 save_json(PENDING_FILE, pending)
 
             elif action == "edit":
-                template = build_edit_template(art)
-                result = send(ADMIN_CHAT_ID, template)
+                result = send(ADMIN_CHAT_ID, build_edit_template(art))
                 tmpl_msg_id = result.get("result", {}).get("message_id")
                 edit_state["waiting"] = {
                     "aid":             aid,
@@ -340,7 +375,6 @@ def handle_updates():
                 del pending[aid]
                 save_json(PENDING_FILE, pending)
 
-        # Admin text reply (edited post)
         msg = update.get("message")
         if msg and str(msg.get("chat", {}).get("id")) == str(ADMIN_CHAT_ID):
             text = msg.get("text", "").strip()
@@ -351,7 +385,7 @@ def handle_updates():
                 aid = waiting.get("aid")
                 art = pending.get(aid)
                 if art:
-                    post_custom_to_channel(text)
+                    post_custom(text)
                     send(ADMIN_CHAT_ID, "✅ Your edited version has been posted!")
                     tg("editMessageText", {
                         "chat_id":    ADMIN_CHAT_ID,
@@ -404,12 +438,10 @@ def check_feeds():
                     "collapse", "emergency", "ban", "sanction", "plunge"
                 ])
 
-                # Generate AI Mongolian summary
-                print(f"[AI] Generating Mongolian summary for: {title[:60]}")
-                ai_response  = generate_mongolian_summary(title, summary, source_name)
+                print(f"[AI] Generating summary: {title[:60]}")
+                ai_response = generate_mongolian_summary(title, summary, source_name)
                 title_mn, summary_mn, analysis_mn = parse_ai_response(ai_response)
 
-                # Fallback if parsing failed
                 if not title_mn:
                     title_mn    = title
                     summary_mn  = summary[:200] if summary else ""
@@ -442,16 +474,16 @@ def check_feeds():
             break
 
     save_json(SENT_FILE, sent)
-    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
-    print(f"[{now}] Queued {queued} articles with AI summaries")
+    print(f"[{datetime.now(timezone.utc).strftime('%H:%M UTC')}] Queued {queued} articles")
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 50)
-    print("MGL Newsroom Bot (AI Edition) starting...")
-    print(f"  Channel : {PAID_CHANNEL}")
-    print(f"  Admin   : {ADMIN_CHAT_ID}")
-    print(f"  AI      : {'enabled' if ANTHROPIC_KEY else 'DISABLED - add ANTHROPIC_API_KEY'}")
+    print("MGL Newsroom Bot — Final Version")
+    print(f"  Free channel    : {FREE_CHANNEL}")
+    print(f"  Premium channel : {PREMIUM_CHANNEL}")
+    print(f"  Admin           : {ADMIN_CHAT_ID}")
+    print(f"  AI              : {'enabled' if ANTHROPIC_KEY else 'DISABLED'}")
     print("=" * 50)
 
     if not BOT_TOKEN:
@@ -462,15 +494,15 @@ def main():
         return
 
     send(ADMIN_CHAT_ID,
-        "🤖 <b>MGL Newsroom Bot (AI Edition) is running!</b>\n\n"
-        f"AI summaries: {'✅ enabled' if ANTHROPIC_KEY else '❌ disabled — add ANTHROPIC_API_KEY in Railway'}\n\n"
-        "Each article will include:\n"
-        "🇬🇧 English headline\n"
-        "🇲🇳 AI-written Mongolian title\n"
-        "📝 Mongolian summary\n"
-        "💡 Investor analysis for Mongolia\n\n"
-        "Buttons: ✅ Agree  ✏️ Edit  ❌ Skip\n\n"
-        f"Posting to: {PAID_CHANNEL}")
+        "🤖 <b>MGL Newsroom Bot — Final Version</b>\n\n"
+        f"📢 Free channel: {FREE_CHANNEL}\n"
+        f"💎 Premium channel: private (invite only)\n"
+        f"🤖 AI summaries: {'✅ on' if ANTHROPIC_KEY else '❌ off — add ANTHROPIC_API_KEY'}\n\n"
+        "<b>How it works:</b>\n"
+        "✅ Agree → Full post to Premium + teaser to Free\n"
+        "✏️ Edit → Edit text then send back\n"
+        "❌ Skip → Discard article\n\n"
+        "Checking news every 2 hours.")
 
     while True:
         try:
