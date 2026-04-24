@@ -6,338 +6,391 @@ import os
 from datetime import datetime, timezone
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
-BOT_TOKEN          = os.environ.get("BOT_TOKEN")
-PAID_CHANNEL       = os.environ.get("PAID_CHANNEL", "@mgl_newsroom")
-FREE_CHANNEL       = os.environ.get("FREE_CHANNEL", "@mgl_newsroom_free")
-ADMIN_CHAT_ID      = os.environ.get("ADMIN_CHAT_ID")
-TRANSLATE_API_KEY  = os.environ.get("TRANSLATE_API_KEY")
-
+BOT_TOKEN     = os.environ.get("BOT_TOKEN")
+PAID_CHANNEL  = os.environ.get("PAID_CHANNEL", "@mgl_newsroom")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 DISCLAIMER = "\n\n⚠️ Энэхүү мэдээлэл нь хөрөнгө оруулалтын зөвлөгөө биш."
 
 # ── NEWS SOURCES ───────────────────────────────────────────────────────────────
-# Mongolian sources
-MN_FEEDS = [
-    "https://montsame.mn/rss",                          # Mongolia national news agency
-    "https://news.mn/rss",                              # News.mn
-    "https://ikon.mn/rss",                              # Ikon.mn business
+RSS_FEEDS = [
+    ("https://feeds.reuters.com/reuters/businessNews",          "Reuters Business"),
+    ("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml","NY Times Business"),
+    ("https://feeds.feedburner.com/entrepreneur/latest",        "Entrepreneur"),
+    ("https://techcrunch.com/feed/",                            "TechCrunch"),
+    ("https://www.mining.com/feed/",                            "Mining.com"),
+    ("https://www.investing.com/rss/news_301.rss",              "Investing.com"),
+    ("https://www.coindesk.com/arc/outboundfeeds/rss/",         "CoinDesk"),
 ]
 
-# Global business + finance sources
-GLOBAL_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",   # Reuters business
-    "https://feeds.reuters.com/reuters/companyNews",    # Reuters markets
-    "https://feeds.bloomberg.com/markets/news.rss",     # Bloomberg markets
-    "https://techcrunch.com/feed/",                     # TechCrunch
-    "https://www.mining.com/feed/",                     # Mining.com — key for Mongolia
+KEYWORDS = [
+    "market", "stock", "stocks", "S&P", "nasdaq", "rally", "crash",
+    "fed", "federal reserve", "interest rate", "inflation", "recession", "GDP",
+    "coal", "copper", "gold", "silver", "oil", "commodity", "commodities",
+    "mining", "mineral", "mongolia", "mongolian", "oyu tolgoi", "tavan tolgoi",
+    "AI", "artificial intelligence", "startup", "IPO", "acquisition",
+    "earnings", "revenue", "profit", "loss", "quarterly",
+    "apple", "google", "microsoft", "amazon", "tesla", "nvidia",
+    "bitcoin", "crypto", "ethereum", "blockchain",
+    "investment", "investor", "fund", "hedge fund", "bond", "yield",
 ]
 
-# Keywords that matter for Mongolian investors
-MN_KEYWORDS = [
-    # Mongolian terms
-    "MSE", "МХБ", "хувьцаа", "бонд", "хөрөнгө оруулалт", "банк",
-    "нүүрс", "зэс", "алт", "Оюу Толгой", "Тавантолгой",
-    "инфляц", "ханш", "төгрөг", "ДНБ",
-    # English terms relevant to Mongolia
-    "Oyu Tolgoi", "Tavan Tolgoi", "coal", "copper", "Mongolia",
-    "MSE", "Mongolian", "tugrik", "MNT",
-]
+SCHEDULE = {
+    0: ("📊", "Weekly Market Outlook",  "7 хоногийн зах зээлийн тойм"),
+    1: ("🌅", "Morning Snapshot",       "Өглөөний тойм"),
+    2: ("⛏️", "Mining & Commodities",   "Уул уурхай ба түүхий эд"),
+    3: ("💡", "Finance Insight",        "Санхүүгийн мэдээлэл"),
+    4: ("📋", "Weekly Recap",           "7 хоногийн дүн"),
+    5: ("🌅", "Weekend Snapshot",       "Амралтын өдрийн тойм"),
+    6: ("🌅", "Weekend Snapshot",       "Амралтын өдрийн тойм"),
+}
 
-GLOBAL_KEYWORDS = [
-    # Markets
-    "market", "stock", "S&P", "NASDAQ", "rally", "crash", "Fed",
-    "interest rate", "inflation", "recession", "GDP",
-    # Commodities (affect Mongolia directly)
-    "coal", "copper", "gold", "oil", "commodity",
-    # Tech & business
-    "AI", "startup", "IPO", "acquisition", "earnings", "revenue",
-    "Apple", "Google", "Microsoft", "Amazon", "Tesla",
-    # Crypto
-    "Bitcoin", "crypto", "blockchain",
-]
+# ── FILES ──────────────────────────────────────────────────────────────────────
+SENT_FILE      = "sent_articles.json"
+PENDING_FILE   = "pending_articles.json"
+EDIT_STATE_FILE = "edit_state.json"   # tracks who is editing what
 
 # ── FILE HELPERS ───────────────────────────────────────────────────────────────
-SENT_FILE    = "sent_articles.json"
-PENDING_FILE = "pending_articles.json"
-
-def load_json(f, default):
+def load_json(path, default):
     try:
-        if os.path.exists(f):
-            with open(f) as fp:
-                return json.load(fp)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
     except Exception:
         pass
     return default
 
-def save_json(f, data):
-    with open(f, "w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ── TELEGRAM HELPERS ───────────────────────────────────────────────────────────
+# ── TELEGRAM ───────────────────────────────────────────────────────────────────
 def tg(method, payload):
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
             json=payload, timeout=15
         )
-        return r.json()
+        result = r.json()
+        if not result.get("ok"):
+            print(f"[TG WARN] {method}: {result.get('description')}")
+        return result
     except Exception as e:
         print(f"[TG ERROR] {method}: {e}")
         return {}
 
-def send(chat_id, text, markup=None):
-    payload = {"chat_id": chat_id, "text": text,
-                "parse_mode": "HTML", "disable_web_page_preview": False}
+def send(chat_id, text, markup=None, reply_to=None):
+    payload = {
+        "chat_id":    chat_id,
+        "text":       text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
     if markup:
         payload["reply_markup"] = json.dumps(markup)
-    tg("sendMessage", payload)
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    return tg("sendMessage", payload)
 
 def answer_cb(cb_id, text):
     tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
 
-# ── TRANSLATION ────────────────────────────────────────────────────────────────
-def translate(text, target="mn"):
-    if not TRANSLATE_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://translation.googleapis.com/language/translate/v2",
-            params={"key": TRANSLATE_API_KEY},
-            json={"q": text, "target": target, "format": "text"},
-            timeout=10
-        )
-        return r.json()["data"]["translations"][0]["translatedText"]
-    except Exception as e:
-        print(f"[TRANSLATE ERROR] {e}")
-        return None
+def delete_message(chat_id, message_id):
+    tg("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
-# ── RELEVANCE CHECK ────────────────────────────────────────────────────────────
-def is_relevant(title, summary, keywords):
-    text = (title + " " + summary).lower()
-    return any(k.lower() in text for k in keywords)
+# ── FORMAT ─────────────────────────────────────────────────────────────────────
+def get_schedule_tag(is_breaking=False):
+    if is_breaking:
+        return "🚨", "Breaking News", "Яаралтай мэдээ"
+    day = datetime.now(timezone.utc).weekday()
+    return SCHEDULE.get(day, ("📰", "News", "Мэдээ"))
 
-# ── CONTENT SCHEDULE ───────────────────────────────────────────────────────────
-def get_schedule_label():
-    """Return what type of post to send based on day of week."""
-    day = datetime.now(timezone.utc).weekday()  # 0=Mon, 4=Fri, 6=Sun
-    return {
-        0: "weekly_outlook",   # Monday
-        1: "daily_snapshot",   # Tuesday
-        2: "mining_update",    # Wednesday
-        3: "finance_tip",      # Thursday
-        4: "weekly_recap",     # Friday
-        5: "daily_snapshot",   # Saturday
-        6: "daily_snapshot",   # Sunday
-    }.get(day, "daily_snapshot")
+def build_post_text(article):
+    """Build the full post text that goes to the channel."""
+    emoji, label_en, label_mn = get_schedule_tag(article.get("is_breaking", False))
+    en = (
+        f"{emoji} <b>{label_en}</b>\n\n"
+        f"<b>{article['title_en']}</b>\n\n"
+        f"🔗 {article['link']}\n"
+        f"<i>via {article['source']}</i>"
+    )
+    mn = (
+        f"{emoji} <b>{label_mn}</b>\n\n"
+        f"<b>{article['title_mn']}</b>\n\n"
+        f"🔗 {article['link']}\n"
+        f"<i>{article['source']}-аас</i>"
+        f"{DISCLAIMER}"
+    )
+    return en, mn
 
-def format_paid_post(article, schedule_label, is_mongolian=False):
-    """Format a rich paid-channel post based on the schedule."""
-    tag = {
-        "weekly_outlook":  "📊 7 хоногийн тойм" if is_mongolian else "📊 Weekly outlook",
-        "daily_snapshot":  "🌅 Өглөөний тойм"  if is_mongolian else "🌅 Morning snapshot",
-        "mining_update":   "⛏️ Уул уурхай"      if is_mongolian else "⛏️ Mining & commodities",
-        "finance_tip":     "💡 Санхүүгийн зөвлөгөө" if is_mongolian else "💡 Finance insight",
-        "weekly_recap":    "📋 7 хоногийн дүн"  if is_mongolian else "📋 Weekly recap",
-        "breaking":        "🚨 Яаралтай мэдээ"  if is_mongolian else "🚨 Breaking news",
-    }.get(schedule_label, "📰 Мэдээ" if is_mongolian else "📰 News")
-
-    title   = article["title_mn"] if is_mongolian else article["title_en"]
-    source  = article["source"]
-    link    = article["link"]
-    via     = f"{source}-аас" if is_mongolian else f"via {source}"
-
-    post = f"{tag}\n\n<b>{title}</b>\n\n🔗 {link}\n<i>{via}</i>"
-    if is_mongolian:
-        post += DISCLAIMER
-    return post
-
-def format_free_teaser(article, is_mongolian=False):
-    """Short teaser for the free channel that drives upgrades."""
-    title = article["title_mn"] if is_mongolian else article["title_en"]
-    if is_mongolian:
-        return (
-            f"📰 <b>{title}</b>\n\n"
-            f"🔒 Дэлгэрэнгүй шинжилгээг төлбөртэй суваг дээр үзнэ үү.\n"
-            f"➡️ @mgl_newsroom-д нэгдэж, хөрөнгө оруулалтын мэдээг тэргүүлж аваарай."
-        )
+def build_edit_template(article):
+    """Plain text template the admin can copy, edit, and send back."""
+    emoji, label_en, label_mn = get_schedule_tag(article.get("is_breaking", False))
     return (
-        f"📰 <b>{title}</b>\n\n"
-        f"🔒 Full analysis in the paid channel.\n"
-        f"➡️ Join @mgl_newsroom for full investor insights."
+        f"✏️ Edit the text below and send it back to me.\n"
+        f"I will post exactly what you write.\n\n"
+        f"──────────────────\n"
+        f"{emoji} {label_en}\n\n"
+        f"{article['title_en']}\n\n"
+        f"🔗 {article['link']}\n"
+        f"via {article['source']}\n"
+        f"──────────────────\n\n"
+        f"🇲🇳 Mongolian version:\n\n"
+        f"{emoji} {label_mn}\n\n"
+        f"{article['title_mn']}\n\n"
+        f"🔗 {article['link']}\n"
+        f"{article['source']}-аас\n"
+        f"{DISCLAIMER}"
     )
 
-# ── APPROVAL SYSTEM ────────────────────────────────────────────────────────────
-def queue_for_approval(article_id, title_en, title_mn, link, source, schedule_label, is_breaking=False):
+def build_admin_preview(article):
+    """Preview card sent to admin for review."""
+    emoji, label_en, _ = get_schedule_tag(article.get("is_breaking", False))
+    tag = f"🚨 BREAKING" if article.get("is_breaking") else f"{emoji} {label_en}"
+    return (
+        f"<b>New article — {tag}</b>\n\n"
+        f"🇬🇧 <b>{article['title_en']}</b>\n\n"
+        f"🇲🇳 {article['title_mn']}\n\n"
+        f"🔗 {article['link']}\n"
+        f"<i>via {article['source']}</i>"
+    )
+
+# ── POST TO CHANNEL ────────────────────────────────────────────────────────────
+def post_to_channel(en_text, mn_text):
+    """Post English then Mongolian to the paid channel."""
+    # Strip HTML for channel since we rebuild it
+    send(PAID_CHANNEL, en_text)
+    time.sleep(2)
+    send(PAID_CHANNEL, mn_text)
+    print(f"[POSTED] to {PAID_CHANNEL}")
+
+def post_custom_to_channel(custom_text):
+    """Post admin-edited custom text directly to channel."""
+    # Split on the separator line if admin kept the template structure
+    parts = custom_text.split("──────────────────")
+    if len(parts) >= 3:
+        # Admin used the template — post each section separately
+        en_part = parts[1].strip()
+        mn_part = parts[2].strip() if len(parts) > 2 else ""
+        # Remove the "Mongolian version:" header if present
+        mn_part = mn_part.replace("🇲🇳 Mongolian version:", "").strip()
+        if en_part:
+            send(PAID_CHANNEL, en_part)
+            time.sleep(2)
+        if mn_part:
+            send(PAID_CHANNEL, mn_part)
+    else:
+        # Admin wrote freely — post as one message
+        send(PAID_CHANNEL, custom_text)
+    print(f"[POSTED CUSTOM] to {PAID_CHANNEL}")
+
+# ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
+def queue_for_approval(article):
     pending = load_json(PENDING_FILE, {})
-    pending[article_id] = {
-        "title_en":      title_en,
-        "title_mn":      title_mn or title_en,
-        "link":          link,
-        "source":        source,
-        "schedule":      schedule_label,
-        "is_breaking":   is_breaking,
-        "queued_at":     datetime.now(timezone.utc).isoformat(),
-    }
+    aid = article["id"]
+    pending[aid] = article
     save_json(PENDING_FILE, pending)
 
-    label_display = "🚨 BREAKING" if is_breaking else f"📅 {schedule_label.replace('_',' ').title()}"
-    preview = (
-        f"<b>{label_display}</b>\n\n"
-        f"🇬🇧 {title_en}\n\n"
-        f"🇲🇳 {title_mn or '(translation pending)'}\n\n"
-        f"🔗 {link}\n"
-        f"<i>via {source}</i>"
-    )
     markup = {"inline_keyboard": [[
-        {"text": "✅ Approve both",   "callback_data": f"approve:{article_id}"},
-        {"text": "🇬🇧 EN only",       "callback_data": f"en_only:{article_id}"},
-        {"text": "🇲🇳 MN only",       "callback_data": f"mn_only:{article_id}"},
-        {"text": "❌ Skip",           "callback_data": f"skip:{article_id}"},
+        {"text": "✅ Agree",  "callback_data": f"agree:{aid}"},
+        {"text": "✏️ Edit",  "callback_data": f"edit:{aid}"},
+        {"text": "❌ Skip",  "callback_data": f"skip:{aid}"},
     ]]}
-    send(ADMIN_CHAT_ID, f"New article for review:\n\n{preview}", markup=markup)
+    result = send(ADMIN_CHAT_ID, build_admin_preview(article), markup=markup)
 
-def post_article(article, channels):
-    """Post approved article to specified channels."""
-    schedule = article.get("schedule", "daily_snapshot")
-    is_breaking = article.get("is_breaking", False)
-    if is_breaking:
-        schedule = "breaking"
+    # Save the message_id so we can delete/update it later
+    msg_id = result.get("result", {}).get("message_id")
+    if msg_id:
+        pending[aid]["preview_msg_id"] = msg_id
+        save_json(PENDING_FILE, pending)
 
-    for ch in channels:
-        is_mn = (ch == FREE_CHANNEL)
-        # paid channel gets full post, free channel gets teaser
-        if ch == PAID_CHANNEL:
-            # post in English
-            send(ch, format_paid_post(article, schedule, is_mongolian=False))
-            time.sleep(2)
-        elif ch == FREE_CHANNEL:
-            # post Mongolian teaser on free channel
-            send(ch, format_free_teaser(article, is_mongolian=True))
-            time.sleep(2)
-
-    # Also post Mongolian version to paid channel
-    if PAID_CHANNEL in channels and article.get("title_mn"):
-        time.sleep(2)
-        send(PAID_CHANNEL, format_paid_post(article, schedule, is_mongolian=True))
-
-# ── CALLBACK HANDLER ───────────────────────────────────────────────────────────
-def handle_callbacks():
-    sent    = load_json(SENT_FILE, {})
-    pending = load_json(PENDING_FILE, {})
-    offset  = sent.get("_offset", 0)
+# ── CALLBACK + MESSAGE HANDLER ─────────────────────────────────────────────────
+def handle_updates():
+    sent       = load_json(SENT_FILE, {})
+    pending    = load_json(PENDING_FILE, {})
+    edit_state = load_json(EDIT_STATE_FILE, {})
+    offset     = sent.get("_offset", 0)
 
     resp    = tg("getUpdates", {"offset": offset, "timeout": 5})
     updates = resp.get("result", [])
 
     for update in updates:
         offset = update["update_id"] + 1
+
+        # ── Handle button taps ──────────────────────────────────────────────
         cb = update.get("callback_query")
-        if not cb:
-            continue
+        if cb:
+            data = cb.get("data", "")
+            if ":" not in data:
+                continue
+            action, aid = data.split(":", 1)
+            art = pending.get(aid)
+            if not art:
+                answer_cb(cb["id"], "Already handled.")
+                continue
 
-        data = cb.get("data", "")
-        if ":" not in data:
-            continue
-        action, article_id = data.split(":", 1)
+            if action == "agree":
+                en_text, mn_text = build_post_text(art)
+                post_to_channel(en_text, mn_text)
+                answer_cb(cb["id"], "✅ Posted to channel!")
+                # Update preview message to show it was approved
+                tg("editMessageText", {
+                    "chat_id":    ADMIN_CHAT_ID,
+                    "message_id": art.get("preview_msg_id"),
+                    "text":       f"✅ Posted: <b>{art['title_en'][:80]}</b>",
+                    "parse_mode": "HTML"
+                })
+                del pending[aid]
+                save_json(PENDING_FILE, pending)
 
-        if article_id not in pending:
-            answer_cb(cb["id"], "Already handled.")
-            continue
+            elif action == "edit":
+                # Send edit template to admin
+                template = build_edit_template(art)
+                result = send(ADMIN_CHAT_ID, template)
+                template_msg_id = result.get("result", {}).get("message_id")
+                # Save edit state — waiting for admin's reply
+                edit_state["waiting"] = {
+                    "aid":             aid,
+                    "template_msg_id": template_msg_id,
+                    "preview_msg_id":  art.get("preview_msg_id"),
+                }
+                save_json(EDIT_STATE_FILE, edit_state)
+                answer_cb(cb["id"], "✏️ Edit the text and send it back!")
 
-        art = pending[article_id]
+            elif action == "skip":
+                answer_cb(cb["id"], "❌ Skipped.")
+                tg("editMessageText", {
+                    "chat_id":    ADMIN_CHAT_ID,
+                    "message_id": art.get("preview_msg_id"),
+                    "text":       f"❌ Skipped: {art['title_en'][:80]}",
+                    "parse_mode": "HTML"
+                })
+                del pending[aid]
+                save_json(PENDING_FILE, pending)
 
-        if action == "approve":
-            post_article(art, [PAID_CHANNEL, FREE_CHANNEL])
-            answer_cb(cb["id"], "Posted to both channels!")
-        elif action == "en_only":
-            post_article(art, [PAID_CHANNEL])
-            answer_cb(cb["id"], "Posted English only.")
-        elif action == "mn_only":
-            # post Mongolian to paid + free
-            send(PAID_CHANNEL, format_paid_post(art, art.get("schedule","daily_snapshot"), is_mongolian=True))
-            send(FREE_CHANNEL, format_free_teaser(art, is_mongolian=True))
-            answer_cb(cb["id"], "Posted Mongolian only.")
-        elif action == "skip":
-            answer_cb(cb["id"], "Skipped.")
+        # ── Handle text messages (admin's edited post) ──────────────────────
+        msg = update.get("message")
+        if msg and str(msg.get("chat", {}).get("id")) == str(ADMIN_CHAT_ID):
+            text = msg.get("text", "").strip()
+            waiting = edit_state.get("waiting")
 
-        del pending[article_id]
-        save_json(PENDING_FILE, pending)
+            # Ignore commands and empty messages
+            if not text or text.startswith("/"):
+                continue
+
+            # If we're waiting for an edit
+            if waiting:
+                aid = waiting.get("aid")
+                art = pending.get(aid)
+                if art:
+                    # Post the custom edited text to channel
+                    post_custom_to_channel(text)
+                    # Confirm to admin
+                    send(ADMIN_CHAT_ID, "✅ Your edited version has been posted to the channel!")
+                    # Clean up preview message
+                    tg("editMessageText", {
+                        "chat_id":    ADMIN_CHAT_ID,
+                        "message_id": waiting.get("preview_msg_id"),
+                        "text":       f"✅ Posted (edited): <b>{art['title_en'][:80]}</b>",
+                        "parse_mode": "HTML"
+                    })
+                    del pending[aid]
+                    save_json(PENDING_FILE, pending)
+                # Clear edit state
+                edit_state.pop("waiting", None)
+                save_json(EDIT_STATE_FILE, edit_state)
 
     if updates:
         sent["_offset"] = offset
         save_json(SENT_FILE, sent)
 
 # ── FEED CHECKER ───────────────────────────────────────────────────────────────
+def is_relevant(title, summary):
+    text = (title + " " + summary).lower()
+    return any(k.lower() in text for k in KEYWORDS)
+
 def check_feeds():
     sent     = load_json(SENT_FILE, {})
     sent_ids = set(k for k in sent if not k.startswith("_"))
-    schedule = get_schedule_label()
-    new_count = 0
+    queued   = 0
 
-    all_feeds = [
-        (url, True,  MN_KEYWORDS)     for url in MN_FEEDS
-    ] + [
-        (url, False, GLOBAL_KEYWORDS) for url in GLOBAL_FEEDS
-    ]
-
-    for feed_url, is_mn_source, keywords in all_feeds:
+    for feed_url, source_name in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:8]:
-                article_id = getattr(entry, "id", entry.get("link", ""))
-                if not article_id or article_id in sent_ids:
+            if not feed.entries:
+                print(f"[EMPTY] {source_name}")
+                continue
+            for entry in feed.entries[:10]:
+                aid = getattr(entry, "id", None) or entry.get("link", "")
+                if not aid or aid in sent_ids:
+                    continue
+                title   = entry.get("title", "").strip()
+                summary = entry.get("summary", "")
+                link    = entry.get("link", "")
+                if not title or not link:
+                    continue
+                if not is_relevant(title, summary):
                     continue
 
-                title_en   = entry.get("title", "").strip()
-                summary    = entry.get("summary", "")
-                link       = entry.get("link", "")
-                source     = feed.feed.get("title", "News")
-
-                if not is_relevant(title_en, summary, keywords):
-                    continue
-
-                # Translate to Mongolian
-                title_mn = translate(title_en) if not is_mn_source else title_en
-                if not title_mn:
-                    title_mn = title_en + " (орчуулга хийгдсэнгүй)"
-
-                # Detect breaking news by keywords
-                is_breaking = any(w in title_en.lower() for w in [
+                is_breaking = any(w in title.lower() for w in [
                     "breaking", "urgent", "flash", "alert", "crash",
-                    "collapse", "emergency", "ban", "sanction"
+                    "collapse", "emergency", "ban", "sanction", "plunge"
                 ])
 
-                queue_for_approval(
-                    article_id, title_en, title_mn,
-                    link, source, schedule, is_breaking
-                )
-
-                sent_ids.add(article_id)
-                sent[article_id] = True
-                new_count += 1
-                time.sleep(2)
-
-                if new_count >= 5:   # max 5 queued per cycle
+                article = {
+                    "id":          aid,
+                    "title_en":    title,
+                    "title_mn":    title + " (Монгол орчуулга удахгүй)",
+                    "link":        link,
+                    "source":      source_name,
+                    "is_breaking": is_breaking,
+                }
+                queue_for_approval(article)
+                sent_ids.add(aid)
+                sent[aid] = True
+                queued += 1
+                time.sleep(1)
+                if queued >= 4:
                     break
-            if new_count >= 5:
-                break
         except Exception as e:
-            print(f"[FEED ERROR] {feed_url}: {e}")
+            print(f"[FEED ERROR] {source_name}: {e}")
+        if queued >= 4:
+            break
 
     save_json(SENT_FILE, sent)
-    print(f"[{datetime.now().strftime('%H:%M')}] Queued {new_count} articles for approval | Schedule: {schedule}")
+    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    print(f"[{now}] Queued {queued} articles")
 
-# ── MAIN LOOP ──────────────────────────────────────────────────────────────────
+# ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
-    print("MGL Newsroom Bot started.")
+    print("=" * 50)
+    print("MGL Newsroom Bot starting...")
+    print(f"  Channel : {PAID_CHANNEL}")
+    print(f"  Admin   : {ADMIN_CHAT_ID}")
+    print("=" * 50)
+
+    if not BOT_TOKEN:
+        print("[FATAL] BOT_TOKEN missing!")
+        return
+    if not ADMIN_CHAT_ID:
+        print("[FATAL] ADMIN_CHAT_ID missing!")
+        return
+
     send(ADMIN_CHAT_ID,
-         "🤖 <b>MGL Newsroom Bot started!</b>\n\n"
-         "I will send articles here for your approval before posting.\n"
-         "Tap ✅ Approve, 🇬🇧/🇲🇳 for single language, or ❌ Skip.")
+        "🤖 <b>MGL Newsroom Bot is running!</b>\n\n"
+        "For each article you will get 3 buttons:\n\n"
+        "✅ <b>Agree</b> — posts immediately as is\n"
+        "✏️ <b>Edit</b> — sends you the text to copy, edit and send back\n"
+        "❌ <b>Skip</b> — discards the article\n\n"
+        f"Posting to: {PAID_CHANNEL}\n"
+        "Checking every 2 hours.")
 
     while True:
-        handle_callbacks()
-        check_feeds()
-        time.sleep(7200)   # check every 2 hours
+        try:
+            handle_updates()
+            check_feeds()
+        except Exception as e:
+            print(f"[LOOP ERROR] {e}")
+        time.sleep(7200)
 
 if __name__ == "__main__":
     main()
