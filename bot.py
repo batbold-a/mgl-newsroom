@@ -132,7 +132,12 @@ Write ONLY Mongolian content. No English. No extra explanation."""
             },
             timeout=30
         )
-        return r.json()["content"][0]["text"].strip()
+        result = r.json()
+        print(f"[CLAUDE RAW] {result}")
+        if "error" in result:
+            print(f"[CLAUDE API ERROR] {result['error']}")
+            return f"TITLE: {title}\nSUMMARY: AI алдаа гарлаа.\nANALYSIS:"
+        return result["content"][0]["text"].strip()
     except Exception as e:
         print(f"[CLAUDE ERROR] {e}")
         return f"TITLE: {title}\nSUMMARY: AI алдаа гарлаа.\nANALYSIS:"
@@ -420,7 +425,10 @@ def check_feeds():
                 continue
 
             for entry in feed.entries[:10]:
-                aid = getattr(entry, "id", None) or entry.get("link", "")
+                raw_id = getattr(entry, "id", None) or entry.get("link", "")
+                # Telegram callback_data max is 64 chars — use short hash as ID
+                import hashlib
+                aid = hashlib.md5(raw_id.encode()).hexdigest()[:16]
                 if not aid or aid in sent_ids:
                     continue
 
