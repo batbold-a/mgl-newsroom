@@ -512,13 +512,23 @@ def main():
         "❌ Skip → Discard article\n\n"
         "Checking news every 2 hours.")
 
+    last_feed_check = 0  # force immediate check on startup
+
     while True:
         try:
+            # Check button taps every 10 seconds
             handle_updates()
-            check_feeds()
+
+            # Check feeds every 2 hours
+            now = time.time()
+            if now - last_feed_check >= 7200:
+                check_feeds()
+                last_feed_check = now
+
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
-        time.sleep(7200)
+
+        time.sleep(10)
 
 if __name__ == "__main__":
     main()
