@@ -1,14 +1,13 @@
 """
-MGL Newsroom Bot — Full Version
-================================
-3 core features:
-1. Morning Market Brief — auto posts to free channel daily at 8am UB time
-2. Weekly structured posts — Mon-Fri different format, AI writes, you approve
-3. Breaking alerts — high impact news sent to you instantly for fast approval
-
-Flow:
-  RSS/Price APIs → Claude writes English summary → Google Translate → Mongolian
-  → Sent to admin for approval → Posted to Premium + teaser to Free
+MGL Newsroom Bot — Refined Version
+====================================
+Active hours: 8am–10pm Ulaanbaatar time (UTC+8)
+News checks: 8am, 11am, 2pm, 5pm, 8pm
+Morning brief: auto-posts at 8am (no approval)
+Breaking alerts: instant any time during active hours
+Duplicate fix: MD5 hash + URL dedup
+Mongolian sources: montsame.mn, news.mn, mse.mn
+Trading style: recommendations not signals
 """
 
 import feedparser
@@ -20,73 +19,95 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
-BOT_TOKEN          = os.environ.get("BOT_TOKEN")
-FREE_CHANNEL       = os.environ.get("FREE_CHANNEL",    "@mglnewsroomfree")
-PREMIUM_CHANNEL    = os.environ.get("PREMIUM_CHANNEL", "-1003833538418")
-ADMIN_CHAT_ID      = os.environ.get("ADMIN_CHAT_ID")
-ANTHROPIC_KEY      = os.environ.get("ANTHROPIC_API_KEY")
-GOOGLE_TRANSLATE   = os.environ.get("GOOGLE_TRANSLATE_KEY")
-PREMIUM_INVITE     = "https://t.me/+BxQ8PEdcyc02YmM9"
+BOT_TOKEN        = os.environ.get("BOT_TOKEN")
+FREE_CHANNEL     = os.environ.get("FREE_CHANNEL",    "@mglnewsroomfree")
+PREMIUM_CHANNEL  = os.environ.get("PREMIUM_CHANNEL", "-1003833538418")
+ADMIN_CHAT_ID    = os.environ.get("ADMIN_CHAT_ID")
+ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY")
+GOOGLE_TRANSLATE = os.environ.get("GOOGLE_TRANSLATE_KEY")
+PREMIUM_INVITE   = "https://t.me/+BxQ8PEdcyc02YmM9"
 
-# Ulaanbaatar is UTC+8
-UB_OFFSET = timedelta(hours=8)
-
+UB_OFFSET  = timedelta(hours=8)
 DISCLAIMER = "\n\n⚠️ Энэхүү мэдээлэл нь хөрөнгө оруулалтын зөвлөгөө биш."
 
+# Active hours: 8am to 10pm UB time
+ACTIVE_HOUR_START = 8
+ACTIVE_HOUR_END   = 22
+
+# News check times (UB hours)
+CHECK_HOURS = {8, 11, 14, 17, 20}
+
 # ── NEWS SOURCES ───────────────────────────────────────────────────────────────
-RSS_FEEDS = [
-    ("https://feeds.reuters.com/reuters/businessNews",            "Reuters Business"),
-    ("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "NY Times Business"),
-    ("https://techcrunch.com/feed/",                              "TechCrunch"),
-    ("https://www.mining.com/feed/",                              "Mining.com"),
-    ("https://www.investing.com/rss/news_301.rss",                "Investing.com"),
-    ("https://www.coindesk.com/arc/outboundfeeds/rss/",           "CoinDesk"),
-    ("https://feeds.feedburner.com/entrepreneur/latest",          "Entrepreneur"),
+# Mongolian sources
+MN_FEEDS = [
+    ("https://montsame.mn/rss",   "Монцамэ"),       # National news agency
+    ("https://news.mn/rss",       "News.mn"),        # Business news
+    ("https://ikon.mn/rss",       "Ikon.mn"),        # Finance news
 ]
+
+# Global sources
+GLOBAL_FEEDS = [
+    ("https://feeds.reuters.com/reuters/businessNews",            "Reuters"),
+    ("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "NY Times"),
+    ("https://www.mining.com/feed/",                              "Mining.com"),
+    ("https://www.coindesk.com/arc/outboundfeeds/rss/",           "CoinDesk"),
+    ("https://feeds.reuters.com/reuters/companyNews",             "Reuters Markets"),
+    ("https://techcrunch.com/feed/",                              "TechCrunch"),
+]
+
+ALL_FEEDS = MN_FEEDS + GLOBAL_FEEDS
 
 KEYWORDS = [
+    # Markets
     "market", "stock", "stocks", "S&P", "nasdaq", "rally", "crash",
     "fed", "federal reserve", "interest rate", "inflation", "recession", "GDP",
-    "coal", "copper", "gold", "silver", "oil", "commodity", "commodities",
-    "mining", "mineral", "mongolia", "mongolian", "oyu tolgoi", "tavan tolgoi",
-    "AI", "artificial intelligence", "startup", "IPO", "acquisition",
-    "earnings", "revenue", "profit", "loss", "quarterly",
-    "apple", "google", "microsoft", "amazon", "tesla", "nvidia",
+    # Commodities — key for Mongolia
+    "coal", "copper", "gold", "silver", "oil", "commodity",
+    "mining", "mineral", "export",
+    # Mongolia specific
+    "mongolia", "mongolian", "oyu tolgoi", "tavan tolgoi", "мхб",
+    "монгол", "хувьцаа", "нүүрс", "зэс", "алт",
+    # Tech & business
+    "AI", "artificial intelligence", "startup", "IPO",
+    "earnings", "revenue", "profit", "quarterly",
+    "apple", "google", "microsoft", "nvidia", "tesla",
+    # Crypto
     "bitcoin", "crypto", "ethereum", "blockchain",
-    "investment", "investor", "fund", "hedge fund", "bond", "yield",
+    # Finance
+    "investment", "investor", "fund", "bond", "yield",
 ]
 
-BREAKING_KEYWORDS = [
-    "breaking", "urgent", "flash", "alert", "crash", "collapse",
-    "emergency", "ban", "sanction", "plunge", "surge", "halted",
-    "bankrupt", "crisis", "war", "attack", "default"
+BREAKING_WORDS = [
+    "breaking", "urgent", "flash", "crash", "collapse",
+    "emergency", "ban", "sanction", "plunge", "halt",
+    "bankrupt", "crisis", "default", "surge"
 ]
 
 # ── WEEKLY SCHEDULE ────────────────────────────────────────────────────────────
 SCHEDULE = {
     0: ("📊", "Weekly Market Outlook",       "7 хоногийн зах зээлийн тойм",
-        "Focus on MSE stocks to watch this week, global market direction, and key events."),
+        "Focus on MSE stocks to watch this week and global market direction."),
     1: ("🌅", "Morning Snapshot",            "Өглөөний тойм",
-        "Summarize the most important business/finance news of the day."),
-    2: ("⛏️", "Mining & Commodities Update", "Уул уурхай ба түүхий эд",
-        "Focus on coal, copper, gold prices and what it means for Mongolia's mining sector and MSE."),
-    3: ("💡", "Finance & Crypto Insight",    "Санхүүгийн мэдээлэл",
-        "Focus on crypto (Bitcoin/Ethereum) and personal finance insights for Mongolian investors."),
-    4: ("📋", "Weekly Recap",                "7 хоногийн дүн",
-        "Summarize the week's key financial events and what to watch next week."),
+        "Summarize the most important business and finance news today."),
+    2: ("⛏️", "Mining & Commodities",        "Уул уурхай ба түүхий эд",
+        "Focus on coal, copper, gold prices and impact on Mongolia's mining sector and MSE stocks."),
+    3: ("💡", "Crypto & Finance Insight",    "Крипто ба санхүүгийн мэдээлэл",
+        "Focus on Bitcoin, Ethereum movements and personal finance insights for Mongolian investors."),
+    4: ("📋", "Weekly Recap & Outlook",      "7 хоногийн дүн",
+        "Summarize the week's key events and what Mongolian investors should watch next week."),
     5: ("🌅", "Weekend Snapshot",            "Амралтын өдрийн тойм",
-        "Summarize weekend financial news and crypto movements."),
+        "Weekend financial news and crypto market movements."),
     6: ("🌅", "Weekend Snapshot",            "Амралтын өдрийн тойм",
-        "Summarize weekend financial news and crypto movements."),
+        "Weekend financial news and crypto market movements."),
 }
 
 # ── FILES ──────────────────────────────────────────────────────────────────────
-SENT_FILE        = "sent_articles.json"
-PENDING_FILE     = "pending_articles.json"
-EDIT_STATE_FILE  = "edit_state.json"
-STATE_FILE       = "bot_state.json"
+SENT_FILE       = "sent_articles.json"
+PENDING_FILE    = "pending_articles.json"
+EDIT_STATE_FILE = "edit_state.json"
+STATE_FILE      = "bot_state.json"
 
-# ── FILE HELPERS ───────────────────────────────────────────────────────────────
+# ── HELPERS ────────────────────────────────────────────────────────────────────
 def load_json(path, default):
     try:
         if os.path.exists(path):
@@ -101,8 +122,43 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def now_ub():
-    """Current time in Ulaanbaatar (UTC+8)."""
     return datetime.now(timezone.utc) + UB_OFFSET
+
+def make_id(url):
+    """Short unique ID from URL — fixes duplicate posting."""
+    return hashlib.md5(url.encode()).hexdigest()[:16]
+
+def is_active_hours():
+    """Only operate 8am–10pm UB time."""
+    h = now_ub().hour
+    return ACTIVE_HOUR_START <= h < ACTIVE_HOUR_END
+
+def should_check_feeds():
+    """Check feeds at 8, 11, 14, 17, 20 UB time."""
+    ub   = now_ub()
+    state = load_json(STATE_FILE, {})
+    key  = f"feed_check_{ub.strftime('%Y-%m-%d_%H')}"
+    if ub.hour in CHECK_HOURS and not state.get(key):
+        state[key] = True
+        # Clean old keys — keep only today's
+        today = ub.strftime("%Y-%m-%d")
+        state = {k: v for k, v in state.items()
+                 if today in k or not k.startswith("feed_check_")}
+        save_json(STATE_FILE, state)
+        return True
+    return False
+
+def should_post_morning_brief():
+    """Post morning brief once at 8am UB time."""
+    ub    = now_ub()
+    state = load_json(STATE_FILE, {})
+    today = ub.strftime("%Y-%m-%d")
+    key   = f"morning_brief_{today}"
+    if ub.hour == 8 and ub.minute < 10 and not state.get(key):
+        state[key] = True
+        save_json(STATE_FILE, state)
+        return True
+    return False
 
 # ── TELEGRAM ───────────────────────────────────────────────────────────────────
 def tg(method, payload):
@@ -133,95 +189,85 @@ def send(chat_id, text, markup=None):
 def answer_cb(cb_id, text):
     tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
 
-# ── PRICE FETCHER — for morning brief ─────────────────────────────────────────
+# ── PRICE FETCHER ──────────────────────────────────────────────────────────────
 def fetch_prices():
-    """Fetch live prices for morning brief."""
-    prices = {
-        "bitcoin": "N/A", "gold": "N/A",
-        "usd_mnt": "N/A", "mse": "N/A"
-    }
+    prices = {"bitcoin": "N/A", "ethereum": "N/A",
+               "gold": "N/A", "usd_mnt": "N/A"}
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price"
-            "?ids=bitcoin,ethereum&vs_currencies=usd",
-            timeout=10
-        )
-        data = r.json()
-        prices["bitcoin"]  = f"${data['bitcoin']['usd']:,.0f}"
-        prices["ethereum"] = f"${data['ethereum']['usd']:,.0f}"
+            "?ids=bitcoin,ethereum&vs_currencies=usd", timeout=10)
+        d = r.json()
+        prices["bitcoin"]  = f"${d['bitcoin']['usd']:,.0f}"
+        prices["ethereum"] = f"${d['ethereum']['usd']:,.0f}"
     except Exception as e:
-        print(f"[PRICE ERROR] Crypto: {e}")
-
+        print(f"[PRICE] Crypto error: {e}")
     try:
         r = requests.get(
-            "https://api.metals.live/v1/spot/gold",
-            timeout=10
-        )
-        gold = r.json()
-        if isinstance(gold, list) and gold:
-            prices["gold"] = f"${gold[0].get('price', 'N/A'):,.0f}/oz"
-        elif isinstance(gold, dict):
-            prices["gold"] = f"${gold.get('price', 'N/A'):,.0f}/oz"
-    except Exception as e:
-        print(f"[PRICE ERROR] Gold: {e}")
-
-    try:
-        r = requests.get(
-            "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=10
-        )
-        rates = r.json()
-        mnt = rates.get("rates", {}).get("MNT", "N/A")
-        if mnt != "N/A":
+            "https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+        mnt = r.json().get("rates", {}).get("MNT")
+        if mnt:
             prices["usd_mnt"] = f"₮{mnt:,.0f}"
     except Exception as e:
-        print(f"[PRICE ERROR] USD/MNT: {e}")
-
+        print(f"[PRICE] USD/MNT error: {e}")
+    try:
+        r = requests.get(
+            "https://api.metals.live/v1/spot/gold", timeout=10)
+        data = r.json()
+        if isinstance(data, list) and data:
+            prices["gold"] = f"${data[0].get('price', 'N/A'):,.0f}/oz"
+    except Exception as e:
+        print(f"[PRICE] Gold error: {e}")
     return prices
 
 # ── GOOGLE TRANSLATE ───────────────────────────────────────────────────────────
-def google_translate(text, target="mn"):
-    """Translate text to Mongolian using Google Translate API."""
-    if not GOOGLE_TRANSLATE:
-        return None
+def translate(text):
+    if not GOOGLE_TRANSLATE or not text:
+        return text
     try:
         r = requests.post(
             "https://translation.googleapis.com/language/translate/v2",
             params={"key": GOOGLE_TRANSLATE},
-            json={"q": text, "target": target, "format": "text"},
+            json={"q": text, "target": "mn", "format": "text"},
             timeout=10
         )
         result = r.json()
         if "error" in result:
-            print(f"[GOOGLE TRANSLATE ERROR] {result['error']}")
-            return None
+            print(f"[TRANSLATE ERROR] {result['error'].get('message')}")
+            return text
         return result["data"]["translations"][0]["translatedText"]
     except Exception as e:
-        print(f"[GOOGLE TRANSLATE ERROR] {e}")
-        return None
+        print(f"[TRANSLATE ERROR] {e}")
+        return text
 
 # ── CLAUDE AI ──────────────────────────────────────────────────────────────────
-def claude_summarize(title, summary, source, day_context):
-    """Use Claude to write a clean structured English summary."""
+def claude_write(title, summary, source, day_context, is_mn_source=False):
+    """
+    Claude writes structured English content.
+    For Mongolian sources it writes a proper English version first.
+    Includes trading RECOMMENDATION (not signal) style.
+    """
     if not ANTHROPIC_KEY:
         return None
 
-    prompt = f"""You are a financial news editor for an investment channel focused on Mongolia.
+    prompt = f"""You are a financial news analyst for a Mongolian investment newsletter.
 
-Article: {title}
-Details: {summary[:500]}
+Article title: {title}
+Summary: {summary[:400]}
 Source: {source}
-Today's focus: {day_context}
+Today's editorial focus: {day_context}
 
-Write a structured response in this EXACT format:
+Write a structured response in EXACTLY this format:
 
-HEADLINE: [A clear, punchy English headline under 15 words]
+HEADLINE: [Clear punchy headline, max 12 words]
 
-SUMMARY: [2-3 sentences explaining what happened and why it matters to investors. Clear, simple language. No jargon.]
+SUMMARY: [2-3 sentences. What happened, why it matters. Simple language, no jargon.]
 
-MONGOLIA_IMPACT: [1-2 sentences on how this specifically affects Mongolian investors, MSE stocks, tugrug exchange rate, or Mongolian businesses. Be specific.]
+MONGOLIA_IMPACT: [1-2 sentences. How does this specifically affect Mongolian investors? Think: MSE stocks, tugrug rate, coal/copper/gold prices, Mongolian banks or businesses. Be specific and practical.]
 
-Write ONLY the structured response. No extra text."""
+RECOMMENDATION: [1 sentence. A practical observation — NOT a buy/sell signal. Example: "Investors monitoring MSE mining stocks may want to watch price action this week." or "This could be a good time to review commodity exposure in your portfolio." Always end with: This is not investment advice.]
+
+Keep everything factual, clear and useful for a Mongolian investor reading this on Telegram."""
 
     try:
         r = requests.post(
@@ -233,7 +279,7 @@ Write ONLY the structured response. No extra text."""
             },
             json={
                 "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 400,
+                "max_tokens": 500,
                 "messages":   [{"role": "user", "content": prompt}]
             },
             timeout=30
@@ -247,253 +293,219 @@ Write ONLY the structured response. No extra text."""
         print(f"[CLAUDE ERROR] {e}")
         return None
 
-def parse_claude_response(text):
-    """Parse Claude's structured response."""
-    headline = summary = impact = ""
+def parse_claude(text):
+    headline = summary = impact = recommendation = ""
     current = None
     for line in (text or "").strip().split("\n"):
         line = line.strip()
         if line.startswith("HEADLINE:"):
-            headline = line.replace("HEADLINE:", "").strip()
-            current = "headline"
+            headline = line.replace("HEADLINE:", "").strip(); current = "h"
         elif line.startswith("SUMMARY:"):
-            summary = line.replace("SUMMARY:", "").strip()
-            current = "summary"
+            summary = line.replace("SUMMARY:", "").strip(); current = "s"
         elif line.startswith("MONGOLIA_IMPACT:"):
-            impact = line.replace("MONGOLIA_IMPACT:", "").strip()
-            current = "impact"
-        elif line and current == "summary":
-            summary += " " + line
-        elif line and current == "impact":
-            impact += " " + line
-    return headline.strip(), summary.strip(), impact.strip()
+            impact = line.replace("MONGOLIA_IMPACT:", "").strip(); current = "i"
+        elif line.startswith("RECOMMENDATION:"):
+            recommendation = line.replace("RECOMMENDATION:", "").strip(); current = "r"
+        elif line:
+            if current == "s": summary += " " + line
+            elif current == "i": impact += " " + line
+            elif current == "r": recommendation += " " + line
+    return (headline.strip(), summary.strip(),
+            impact.strip(), recommendation.strip())
+
+# ── PROCESS ARTICLE ────────────────────────────────────────────────────────────
+def process_article(title, summary, source, is_breaking, is_mn_source=False):
+    day = now_ub().weekday()
+    _, _, _, day_context = SCHEDULE.get(day, ("", "", "", "Summarize key financial news."))
+
+    # Claude writes English content
+    raw = claude_write(title, summary, source, day_context, is_mn_source)
+    headline_en, summary_en, impact_en, rec_en = parse_claude(raw)
+
+    # Fallbacks
+    if not headline_en:
+        headline_en = title
+        summary_en  = summary[:200] or "See full article."
+        impact_en   = "Monitor for impact on Mongolian markets."
+        rec_en      = "This is not investment advice."
+
+    # Google Translate → Mongolian
+    headline_mn = translate(headline_en)
+    summary_mn  = translate(summary_en)
+    impact_mn   = translate(impact_en)
+    rec_mn      = translate(rec_en)
+
+    return {
+        "headline_en":    headline_en,
+        "summary_en":     summary_en,
+        "impact_en":      impact_en,
+        "rec_en":         rec_en,
+        "headline_mn":    headline_mn,
+        "summary_mn":     summary_mn,
+        "impact_mn":      impact_mn,
+        "rec_mn":         rec_mn,
+    }
 
 # ── FORMAT POSTS ───────────────────────────────────────────────────────────────
 def get_tag(is_breaking=False):
     if is_breaking:
         return "🚨", "Breaking News", "Яаралтай мэдээ"
     day = now_ub().weekday()
-    emoji, en, mn, _ = SCHEDULE.get(day, ("📰", "News", "Мэдээ", ""))
-    return emoji, en, mn
+    e, en, mn, _ = SCHEDULE.get(day, ("📰", "News", "Мэдээ", ""))
+    return e, en, mn
 
-def build_premium_post(article):
-    """Full post for premium channel."""
-    emoji, label_en, label_mn = get_tag(article.get("is_breaking", False))
-
-    # English version
+def build_premium_post(a):
+    emoji, label_en, label_mn = get_tag(a.get("is_breaking", False))
     en = (
         f"{emoji} <b>{label_en}</b>\n\n"
-        f"<b>{article['headline_en']}</b>\n\n"
-        f"{article['summary_en']}\n\n"
-        f"💡 <i>{article['impact_en']}</i>\n\n"
-        f"🔗 {article['link']}\n"
-        f"<i>via {article['source']}</i>"
+        f"<b>{a['headline_en']}</b>\n\n"
+        f"{a['summary_en']}\n\n"
+        f"💡 <i>{a['impact_en']}</i>\n\n"
+        f"📌 <i>{a['rec_en']}</i>\n\n"
+        f"🔗 {a['link']}\n"
+        f"<i>via {a['source']}</i>"
     )
-
-    # Mongolian version
     mn = (
         f"{emoji} <b>{label_mn}</b>\n\n"
-        f"<b>{article['headline_mn']}</b>\n\n"
-        f"{article['summary_mn']}\n\n"
-        f"💡 <i>{article['impact_mn']}</i>\n\n"
-        f"🔗 {article['link']}\n"
-        f"<i>{article['source']}-аас</i>"
+        f"<b>{a['headline_mn']}</b>\n\n"
+        f"{a['summary_mn']}\n\n"
+        f"💡 <i>{a['impact_mn']}</i>\n\n"
+        f"📌 <i>{a['rec_mn']}</i>\n\n"
+        f"🔗 {a['link']}\n"
+        f"<i>{a['source']}-аас</i>"
         f"{DISCLAIMER}"
     )
     return en, mn
 
-def build_free_teaser(article):
-    """Short teaser for free channel with premium invite."""
-    emoji, _, label_mn = get_tag(article.get("is_breaking", False))
-    teaser = article.get("summary_mn", "")[:120]
-
+def build_free_teaser(a):
+    emoji, _, label_mn = get_tag(a.get("is_breaking", False))
+    teaser = a.get("summary_mn", "")[:120]
     return (
-        f"{emoji} <b>{article['headline_mn']}</b>\n\n"
+        f"{emoji} <b>{a['headline_mn']}</b>\n\n"
         f"{teaser}...\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔒 <b>Дэлгэрэнгүй шинжилгээ Premium сувгаас</b>\n\n"
-        f"✅ Бүтэн мэдээ + хөрөнгө оруулалтын шинжилгээ\n"
+        f"✅ Бүтэн мэдээ + хөрөнгө оруулалтын зөвлөмж\n"
         f"✅ Монгол хэл дээр AI тайлбар\n"
-        f"✅ Өдөр бүрийн зах зээлийн мэдээлэл\n\n"
+        f"✅ Өдөр бүр 8:00 - 22:00 хооронд мэдээлэл\n\n"
         f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>"
     )
 
-def build_admin_preview(article):
-    """Preview for admin approval."""
-    emoji, label_en, _ = get_tag(article.get("is_breaking", False))
-    tag = "🚨 BREAKING — APPROVE FAST!" if article.get("is_breaking") else f"{emoji} {label_en}"
-
+def build_admin_preview(a):
+    emoji, label_en, _ = get_tag(a.get("is_breaking", False))
+    tag = "🚨 BREAKING — APPROVE FAST!" if a.get("is_breaking") else f"{emoji} {label_en}"
     return (
         f"<b>{tag}</b>\n\n"
-        f"🇬🇧 <b>{article['headline_en']}</b>\n"
-        f"{article['summary_en']}\n"
-        f"💡 {article['impact_en']}\n\n"
+        f"🇬🇧 <b>{a['headline_en']}</b>\n"
+        f"{a['summary_en']}\n"
+        f"💡 {a['impact_en']}\n"
+        f"📌 {a['rec_en']}\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🇲🇳 <b>{article['headline_mn']}</b>\n"
-        f"{article['summary_mn']}\n"
-        f"💡 {article['impact_mn']}\n"
+        f"🇲🇳 <b>{a['headline_mn']}</b>\n"
+        f"{a['summary_mn']}\n"
+        f"💡 {a['impact_mn']}\n"
+        f"📌 {a['rec_mn']}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 {article['link']}\n"
-        f"<i>via {article['source']}</i>"
+        f"🔗 {a['link']}\n"
+        f"<i>via {a['source']}</i>"
     )
 
-def build_edit_template(article):
-    """Editable template for admin."""
-    emoji, label_en, label_mn = get_tag(article.get("is_breaking", False))
+def build_edit_template(a):
+    emoji, label_en, label_mn = get_tag(a.get("is_breaking", False))
     return (
         f"✏️ Edit and send back:\n\n"
         f"══ ENGLISH (Premium) ══\n"
         f"{emoji} {label_en}\n\n"
-        f"{article['headline_en']}\n\n"
-        f"{article['summary_en']}\n\n"
-        f"💡 {article['impact_en']}\n\n"
-        f"🔗 {article['link']}\n"
-        f"via {article['source']}\n\n"
+        f"{a['headline_en']}\n\n"
+        f"{a['summary_en']}\n\n"
+        f"💡 {a['impact_en']}\n\n"
+        f"📌 {a['rec_en']}\n\n"
+        f"🔗 {a['link']}\n"
+        f"via {a['source']}\n\n"
         f"══ MONGOLIAN (Premium) ══\n"
         f"{emoji} {label_mn}\n\n"
-        f"{article['headline_mn']}\n\n"
-        f"{article['summary_mn']}\n\n"
-        f"💡 {article['impact_mn']}\n\n"
-        f"🔗 {article['link']}\n"
-        f"{article['source']}-аас"
+        f"{a['headline_mn']}\n\n"
+        f"{a['summary_mn']}\n\n"
+        f"💡 {a['impact_mn']}\n\n"
+        f"📌 {a['rec_mn']}\n\n"
+        f"🔗 {a['link']}\n"
+        f"{a['source']}-аас"
         f"{DISCLAIMER}\n\n"
         f"══ FREE TEASER ══\n"
-        f"{emoji} {article['headline_mn']}\n\n"
-        f"{article['summary_mn'][:120]}...\n\n"
+        f"{emoji} {a['headline_mn']}\n\n"
+        f"{a['summary_mn'][:120]}...\n\n"
         f"🔒 Дэлгэрэнгүй шинжилгээ Premium сувгаас\n"
         f"➡️ Нэгдэх: {PREMIUM_INVITE}"
     )
 
-# ── MORNING BRIEF ──────────────────────────────────────────────────────────────
-def post_morning_brief():
-    """Auto-post morning market brief to FREE channel — no approval needed."""
-    print("[MORNING BRIEF] Fetching prices...")
-    prices = fetch_prices()
-    ub_now = now_ub()
-    date_str = ub_now.strftime("%Y.%m.%d")
-
-    # Arrow indicators (placeholder — can be enhanced with previous day comparison)
-    post = (
-        f"🌅 <b>Өглөөний зах зээлийн тойм</b>\n"
-        f"<i>{date_str}</i>\n\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"₿ Bitcoin:  <b>{prices['bitcoin']}</b>\n"
-        f"🥇 Алт:     <b>{prices['gold']}</b>\n"
-        f"💵 USD/MNT: <b>{prices['usd_mnt']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 Дэлгэрэнгүй шинжилгээ болон МХБ-ийн мэдээг Premium сувгаас аваарай\n\n"
-        f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>\n\n"
-        f"{DISCLAIMER}"
-    )
-
-    send(FREE_CHANNEL, post)
-    # Also send prices to premium channel
-    premium_post = (
-        f"🌅 <b>Morning Market Brief</b>\n"
-        f"<i>{date_str} — Ulaanbaatar</i>\n\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"₿ Bitcoin:  <b>{prices['bitcoin']}</b>\n"
-        f"🥇 Gold:    <b>{prices['gold']}</b>\n"
-        f"💵 USD/MNT: <b>{prices['usd_mnt']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"<i>Full analysis and news coming throughout the day.</i>"
-    )
-    send(PREMIUM_CHANNEL, premium_post)
-    print(f"[MORNING BRIEF] Posted to both channels")
-
-    # Save last morning brief time
-    state = load_json(STATE_FILE, {})
-    state["last_morning_brief"] = ub_now.strftime("%Y-%m-%d")
-    save_json(STATE_FILE, state)
-
-def should_post_morning_brief():
-    """Check if morning brief should be posted — 8am UB time, once per day."""
-    ub_now = now_ub()
-    state  = load_json(STATE_FILE, {})
-    today  = ub_now.strftime("%Y-%m-%d")
-    last   = state.get("last_morning_brief", "")
-
-    # Post between 8:00 and 8:10 UB time, once per day
-    is_morning = ub_now.hour == 8 and ub_now.minute < 10
-    not_posted_today = last != today
-
-    return is_morning and not_posted_today
-
-# ── PROCESS ARTICLE ────────────────────────────────────────────────────────────
-def process_article(title, summary, link, source, is_breaking):
-    """Run article through Claude + Google Translate pipeline."""
-    day = now_ub().weekday()
-    _, _, _, day_context = SCHEDULE.get(day, ("", "", "", "Summarize key financial news."))
-
-    # Step 1 — Claude writes clean English summary
-    claude_raw = claude_summarize(title, summary, source, day_context)
-    headline_en, summary_en, impact_en = parse_claude_response(claude_raw)
-
-    # Fallback if Claude fails
-    if not headline_en:
-        headline_en = title
-        summary_en  = summary[:200] if summary else "See full article for details."
-        impact_en   = "Monitor for impact on Mongolian markets and MSE stocks."
-
-    # Step 2 — Google Translate English → Mongolian
-    headline_mn = google_translate(headline_en) or headline_en
-    summary_mn  = google_translate(summary_en)  or summary_en
-    impact_mn   = google_translate(impact_en)   or impact_en
-
-    return {
-        "headline_en": headline_en,
-        "summary_en":  summary_en,
-        "impact_en":   impact_en,
-        "headline_mn": headline_mn,
-        "summary_mn":  summary_mn,
-        "impact_mn":   impact_mn,
-    }
-
-# ── POST TO CHANNELS ───────────────────────────────────────────────────────────
-def post_approved(article):
-    """Post full article to premium + teaser to free."""
-    en_post, mn_post = build_premium_post(article)
-    teaser = build_free_teaser(article)
-
-    send(PREMIUM_CHANNEL, en_post)
+# ── POST HELPERS ───────────────────────────────────────────────────────────────
+def post_approved(a):
+    en, mn = build_premium_post(a)
+    teaser = build_free_teaser(a)
+    send(PREMIUM_CHANNEL, en)
     time.sleep(2)
-    send(PREMIUM_CHANNEL, mn_post)
+    send(PREMIUM_CHANNEL, mn)
     time.sleep(2)
     send(FREE_CHANNEL, teaser)
-    print(f"[POSTED] {article['headline_en'][:60]}")
+    print(f"[POSTED] {a['headline_en'][:60]}")
 
 def post_custom(text):
-    """Post admin-edited text."""
     if "══ MONGOLIAN (Premium) ══" in text:
         parts = text.split("══")
         en_part = mn_part = teaser_part = ""
         current = None
         for p in parts:
             p = p.strip()
-            if "ENGLISH (Premium)" in p:
-                current = "en"
-            elif "MONGOLIAN (Premium)" in p:
-                current = "mn"
-            elif "FREE TEASER" in p:
-                current = "teaser"
-            elif current == "en" and p:
-                en_part = p
-            elif current == "mn" and p:
-                mn_part = p
-            elif current == "teaser" and p:
-                teaser_part = p
-
-        if en_part:
-            send(PREMIUM_CHANNEL, en_part)
-            time.sleep(2)
-        if mn_part:
-            send(PREMIUM_CHANNEL, mn_part)
-            time.sleep(2)
-        if teaser_part:
-            send(FREE_CHANNEL, teaser_part)
+            if "ENGLISH (Premium)" in p: current = "en"
+            elif "MONGOLIAN (Premium)" in p: current = "mn"
+            elif "FREE TEASER" in p: current = "teaser"
+            elif current == "en" and p: en_part = p
+            elif current == "mn" and p: mn_part = p
+            elif current == "teaser" and p: teaser_part = p
+        if en_part:   send(PREMIUM_CHANNEL, en_part);   time.sleep(2)
+        if mn_part:   send(PREMIUM_CHANNEL, mn_part);   time.sleep(2)
+        if teaser_part: send(FREE_CHANNEL, teaser_part)
     else:
         send(PREMIUM_CHANNEL, text)
     print(f"[POSTED CUSTOM]")
+
+# ── MORNING BRIEF ──────────────────────────────────────────────────────────────
+def post_morning_brief():
+    print("[MORNING BRIEF] Posting...")
+    p = fetch_prices()
+    date_str = now_ub().strftime("%Y.%m.%d")
+    day_names = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
+    day_mn = day_names[now_ub().weekday()]
+
+    free_post = (
+        f"🌅 <b>Өглөөний зах зээлийн тойм</b>\n"
+        f"<i>{day_mn}, {date_str}</i>\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"₿ Bitcoin:  <b>{p['bitcoin']}</b>\n"
+        f"💎 Ethereum: <b>{p['ethereum']}</b>\n"
+        f"🥇 Алт:     <b>{p['gold']}</b>\n"
+        f"💵 USD/MNT: <b>{p['usd_mnt']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 Дэлгэрэнгүй шинжилгээ Premium сувгаас\n"
+        f"➡️ <b>{PREMIUM_INVITE}</b>"
+    )
+
+    premium_post = (
+        f"🌅 <b>Morning Market Brief</b>\n"
+        f"<i>{day_mn}, {date_str} — Ulaanbaatar</i>\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"₿ Bitcoin:  <b>{p['bitcoin']}</b>\n"
+        f"💎 Ethereum: <b>{p['ethereum']}</b>\n"
+        f"🥇 Gold:    <b>{p['gold']}</b>\n"
+        f"💵 USD/MNT: <b>{p['usd_mnt']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"<i>News analysis starts at 11:00 AM. Breaking alerts sent immediately.</i>"
+    )
+
+    send(FREE_CHANNEL, free_post)
+    time.sleep(2)
+    send(PREMIUM_CHANNEL, premium_post)
+    print(f"[MORNING BRIEF] Done")
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
@@ -527,12 +539,10 @@ def handle_updates():
     for update in updates:
         offset = update["update_id"] + 1
 
-        # Button taps
         cb = update.get("callback_query")
         if cb:
             data = cb.get("data", "")
-            if ":" not in data:
-                continue
+            if ":" not in data: continue
             action, aid = data.split(":", 1)
             art = pending.get(aid)
 
@@ -574,13 +584,11 @@ def handle_updates():
                 del pending[aid]
                 save_json(PENDING_FILE, pending)
 
-        # Admin text reply (edited post)
         msg = update.get("message")
         if msg and str(msg.get("chat", {}).get("id")) == str(ADMIN_CHAT_ID):
             text    = msg.get("text", "").strip()
             waiting = edit_state.get("waiting")
-            if not text or text.startswith("/"):
-                continue
+            if not text or text.startswith("/"): continue
             if waiting:
                 aid = waiting.get("aid")
                 art = pending.get(aid)
@@ -607,147 +615,142 @@ def is_relevant(title, summary):
     text = (title + " " + summary).lower()
     return any(k.lower() in text for k in KEYWORDS)
 
-def is_breaking(title):
-    return any(w in title.lower() for w in BREAKING_KEYWORDS)
-
 def check_feeds():
     sent     = load_json(SENT_FILE, {})
+    # Use both URL hash AND title hash to catch duplicates
     sent_ids = set(k for k in sent if not k.startswith("_"))
     queued   = 0
-    breaking_found = []
-    normal_found   = []
+    breaking = []
+    normal   = []
 
-    for feed_url, source_name in RSS_FEEDS:
+    for feed_url, source_name in ALL_FEEDS:
+        is_mn = any(feed_url == f for f, _ in MN_FEEDS)
         try:
             feed = feedparser.parse(feed_url)
             if not feed.entries:
                 print(f"[EMPTY] {source_name}")
                 continue
 
-            for entry in feed.entries[:10]:
-                raw_id = getattr(entry, "id", None) or entry.get("link", "")
-                aid    = hashlib.md5(raw_id.encode()).hexdigest()[:16]
-
-                if not aid or aid in sent_ids:
+            for entry in feed.entries[:8]:
+                # Use BOTH link and title as dedup keys
+                link     = entry.get("link", "")
+                title    = entry.get("title", "").strip()
+                if not link or not title:
                     continue
 
-                title   = entry.get("title", "").strip()
+                link_id  = make_id(link)
+                title_id = make_id(title)
+
+                # Skip if either ID seen before — prevents duplicates
+                if link_id in sent_ids or title_id in sent_ids:
+                    continue
+
                 summary = entry.get("summary", "")
-                link    = entry.get("link", "")
-
-                if not title or not link:
-                    continue
                 if not is_relevant(title, summary):
                     continue
 
                 item = {
-                    "aid":        aid,
+                    "link_id":    link_id,
+                    "title_id":   title_id,
                     "title":      title,
                     "summary":    summary,
                     "link":       link,
                     "source":     source_name,
-                    "is_breaking": is_breaking(title),
+                    "is_mn":      is_mn,
+                    "is_breaking": any(w in title.lower() for w in BREAKING_WORDS),
                 }
 
                 if item["is_breaking"]:
-                    breaking_found.append(item)
+                    breaking.append(item)
                 else:
-                    normal_found.append(item)
+                    normal.append(item)
 
-                sent_ids.add(aid)
-                sent[aid] = True
+                # Mark both IDs as seen
+                sent_ids.add(link_id)
+                sent_ids.add(title_id)
+                sent[link_id]  = True
+                sent[title_id] = True
 
         except Exception as e:
             print(f"[FEED ERROR] {source_name}: {e}")
 
-    # Process breaking news FIRST — immediately
-    for item in breaking_found[:2]:
-        print(f"[BREAKING] {item['title'][:60]}")
+    # Breaking news first — max 2
+    for item in breaking[:2]:
+        print(f"[🚨 BREAKING] {item['title'][:60]}")
         processed = process_article(
             item["title"], item["summary"],
-            item["link"], item["source"], True
+            item["source"], True, item["is_mn"]
         )
-        article = {
-            "id":         item["aid"],
-            "link":       item["link"],
-            "source":     item["source"],
-            "is_breaking": True,
+        queue_for_approval({
+            "id": item["link_id"], "link": item["link"],
+            "source": item["source"], "is_breaking": True,
             **processed
-        }
-        queue_for_approval(article)
+        })
         queued += 1
         time.sleep(2)
 
-    # Process normal news — max 3 per cycle
-    for item in normal_found[:3]:
-        print(f"[AI] Processing: {item['title'][:60]}")
+    # Normal news — max 3 per cycle
+    for item in normal[:3]:
+        print(f"[AI] {item['title'][:60]}")
         processed = process_article(
             item["title"], item["summary"],
-            item["link"], item["source"], False
+            item["source"], False, item["is_mn"]
         )
-        article = {
-            "id":         item["aid"],
-            "link":       item["link"],
-            "source":     item["source"],
-            "is_breaking": False,
+        queue_for_approval({
+            "id": item["link_id"], "link": item["link"],
+            "source": item["source"], "is_breaking": False,
             **processed
-        }
-        queue_for_approval(article)
+        })
         queued += 1
         time.sleep(2)
 
     save_json(SENT_FILE, sent)
-    ub_now = now_ub()
-    print(f"[{ub_now.strftime('%H:%M UB')}] Queued {queued} articles "
-          f"({len(breaking_found)} breaking, {len(normal_found)} normal)")
+    ub = now_ub()
+    print(f"[{ub.strftime('%H:%M UB')}] Queued {queued} articles "
+          f"({len(breaking)} breaking, {len(normal)} normal found)")
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 55)
-    print("MGL Newsroom Bot — Full Version")
-    print(f"  Free channel    : {FREE_CHANNEL}")
-    print(f"  Premium channel : {PREMIUM_CHANNEL}")
-    print(f"  Admin           : {ADMIN_CHAT_ID}")
-    print(f"  Claude AI       : {'✅' if ANTHROPIC_KEY    else '❌ missing ANTHROPIC_API_KEY'}")
-    print(f"  Google Translate: {'✅' if GOOGLE_TRANSLATE else '❌ missing GOOGLE_TRANSLATE_KEY'}")
+    print("MGL Newsroom Bot — Refined Version")
+    print(f"  Free    : {FREE_CHANNEL}")
+    print(f"  Premium : {PREMIUM_CHANNEL}")
+    print(f"  Hours   : {ACTIVE_HOUR_START}am–{ACTIVE_HOUR_END-2}pm UB")
+    print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ missing'}")
+    print(f"  Google  : {'✅' if GOOGLE_TRANSLATE else '❌ missing'}")
     print("=" * 55)
 
-    if not BOT_TOKEN:
-        print("[FATAL] BOT_TOKEN missing!")
-        return
-    if not ADMIN_CHAT_ID:
-        print("[FATAL] ADMIN_CHAT_ID missing!")
-        return
+    if not BOT_TOKEN:    print("[FATAL] BOT_TOKEN missing!"); return
+    if not ADMIN_CHAT_ID: print("[FATAL] ADMIN_CHAT_ID missing!"); return
 
     send(ADMIN_CHAT_ID,
-        "🤖 <b>MGL Newsroom Bot — Full Version</b>\n\n"
+        "🤖 <b>MGL Newsroom Bot — Refined</b>\n\n"
         f"📢 Free: {FREE_CHANNEL}\n"
-        f"💎 Premium: private channel\n"
-        f"🤖 Claude AI: {'✅' if ANTHROPIC_KEY    else '❌ add ANTHROPIC_API_KEY'}\n"
-        f"🌐 Google Translate: {'✅' if GOOGLE_TRANSLATE else '❌ add GOOGLE_TRANSLATE_KEY'}\n\n"
-        "<b>Features:</b>\n"
-        "🌅 Morning brief auto-posts at 8am UB time\n"
-        "📰 News checked every 2 hours\n"
-        "🚨 Breaking news sent to you instantly\n"
-        "✅ Agree / ✏️ Edit / ❌ Skip buttons\n\n"
-        "Bot is running!")
-
-    last_feed_check = 0
+        f"💎 Premium: private\n"
+        f"🕐 Active: 8am–10pm UB time\n"
+        f"📰 News checks: 8am, 11am, 2pm, 5pm, 8pm\n"
+        f"🤖 Claude: {'✅' if ANTHROPIC_KEY    else '❌'} | "
+        f"Google Translate: {'✅' if GOOGLE_TRANSLATE else '❌'}\n\n"
+        "<b>What's new:</b>\n"
+        "✅ No duplicate posts\n"
+        "✅ Mongolian sources included\n"
+        "✅ Trading recommendations (not signals)\n"
+        "✅ Quiet after 10pm — no night spam\n"
+        "✅ Breaking news instant any time\n\n"
+        "Running!")
 
     while True:
         try:
-            # 1. Always check button taps — every 10 seconds
+            # Always check button taps — 10 second interval
             handle_updates()
 
-            # 2. Morning brief at 8am UB time — auto, no approval
+            # Morning brief at 8am UB
             if should_post_morning_brief():
                 post_morning_brief()
 
-            # 3. Check feeds every 2 hours
-            now = time.time()
-            if now - last_feed_check >= 7200:
+            # News checks at 8, 11, 14, 17, 20 UB — only during active hours
+            if is_active_hours() and should_check_feeds():
                 check_feeds()
-                last_feed_check = now
 
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
