@@ -129,9 +129,14 @@ def make_id(url):
     return hashlib.md5(url.encode()).hexdigest()[:16]
 
 def is_active_hours():
-    """Only operate 8am–10pm UB time."""
-    h = now_ub().hour
-    return ACTIVE_HOUR_START <= h < ACTIVE_HOUR_END
+    """Only operate during configured hours — reads from state file."""
+    state   = load_json(STATE_FILE, {})
+    if state.get("paused", False):
+        return False
+    h_start = state.get("hour_start", ACTIVE_HOUR_START)
+    h_end   = state.get("hour_end",   ACTIVE_HOUR_END)
+    h       = now_ub().hour
+    return h_start <= h < h_end
 
 def should_check_feeds():
     """Check feeds at 8, 11, 14, 17, 20 UB time."""
@@ -526,6 +531,109 @@ def queue_for_approval(article):
         pending[aid]["preview_msg_id"] = msg_id
         save_json(PENDING_FILE, pending)
 
+
+# ── ADMIN COMMANDS ─────────────────────────────────────────────────────────────
+def handle_command(text):
+    """Handle admin commands sent directly to the bot."""
+    state = load_json(STATE_FILE, {})
+    parts = text.strip().split()
+    cmd   = parts[0].lower()
+
+    # /status — show current bot settings
+    if cmd == "/status":
+        paused     = state.get("paused", False)
+        hour_start = state.get("hour_start", ACTIVE_HOUR_START)
+        hour_end   = state.get("hour_end",   ACTIVE_HOUR_END)
+        ub         = now_ub()
+        active     = is_active_hours()
+        send(ADMIN_CHAT_ID,
+            f"🤖 <b>Bot Status</b>\n\n"
+            f"⏰ Current UB time: <b>{ub.strftime('%H:%M')}</b>\n"
+            f"🕐 Active hours: <b>{hour_start}:00 – {hour_end}:00</b>\n"
+            f"📡 Currently active: <b>{'Yes' if active and not paused else 'No'}</b>\n"
+            f"⏸ Paused: <b>{'Yes' if paused else 'No'}</b>\n\n"
+            f"<b>Commands:</b>\n"
+            f"/pause — pause bot (no news sent to you)\n"
+            f"/resume — resume bot\n"
+            f"/hours 8 22 — set active hours (e.g. 8am to 10pm)\n"
+            f"/checknow — fetch news immediately\n"
+            f"/morning — post morning brief now\n"
+            f"/status — show this message"
+        )
+
+    # /pause — pause bot
+    elif cmd == "/pause":
+        state["paused"] = True
+        save_json(STATE_FILE, state)
+        send(ADMIN_CHAT_ID,
+            "⏸ <b>Bot paused.</b>\n\n"
+            "No news will be sent to you until you type /resume.\n"
+            "Breaking alerts also paused."
+        )
+
+    # /resume — resume bot
+    elif cmd == "/resume":
+        state["paused"] = False
+        save_json(STATE_FILE, state)
+        ub = now_ub()
+        send(ADMIN_CHAT_ID,
+            f"▶️ <b>Bot resumed!</b>\n\n"
+            f"Current UB time: {ub.strftime('%H:%M')}\n"
+            f"Active hours: {state.get('hour_start', ACTIVE_HOUR_START)}:00 – "
+            f"{state.get('hour_end', ACTIVE_HOUR_END)}:00"
+        )
+
+    # /hours 8 22 — change active hours
+    elif cmd == "/hours":
+        if len(parts) == 3:
+            try:
+                h_start = int(parts[1])
+                h_end   = int(parts[2])
+                if 0 <= h_start < h_end <= 24:
+                    state["hour_start"] = h_start
+                    state["hour_end"]   = h_end
+                    save_json(STATE_FILE, state)
+                    send(ADMIN_CHAT_ID,
+                        f"✅ <b>Active hours updated!</b>\n\n"
+                        f"Bot now runs: <b>{h_start}:00 – {h_end}:00 UB time</b>\n\n"
+                        f"Examples:\n"
+                        f"/hours 8 22 → 8am to 10pm\n"
+                        f"/hours 9 21 → 9am to 9pm\n"
+                        f"/hours 8 24 → 8am to midnight"
+                    )
+                else:
+                    send(ADMIN_CHAT_ID, "❌ Invalid hours. Example: /hours 8 22")
+            except ValueError:
+                send(ADMIN_CHAT_ID, "❌ Use numbers. Example: /hours 8 22")
+        else:
+            send(ADMIN_CHAT_ID,
+                f"Current hours: {state.get('hour_start', ACTIVE_HOUR_START)}:00 – "
+                f"{state.get('hour_end', ACTIVE_HOUR_END)}:00\n\n"
+                "To change: /hours 8 22"
+            )
+
+    # /checknow — fetch news immediately regardless of schedule
+    elif cmd == "/checknow":
+        send(ADMIN_CHAT_ID, "🔍 Checking feeds now... You will receive articles shortly.")
+        check_feeds()
+
+    # /morning — post morning brief immediately
+    elif cmd == "/morning":
+        send(ADMIN_CHAT_ID, "🌅 Posting morning brief now...")
+        post_morning_brief()
+
+    else:
+        send(ADMIN_CHAT_ID,
+            f"❓ Unknown command: {cmd}\n\n"
+            "<b>Available commands:</b>\n"
+            "/status — bot status and settings\n"
+            "/pause — pause the bot\n"
+            "/resume — resume the bot\n"
+            "/hours 8 22 — set active hours\n"
+            "/checknow — fetch news immediately\n"
+            "/morning — post morning brief now"
+        )
+
 # ── HANDLE UPDATES ─────────────────────────────────────────────────────────────
 def handle_updates():
     sent       = load_json(SENT_FILE, {})
@@ -588,7 +696,14 @@ def handle_updates():
         if msg and str(msg.get("chat", {}).get("id")) == str(ADMIN_CHAT_ID):
             text    = msg.get("text", "").strip()
             waiting = edit_state.get("waiting")
-            if not text or text.startswith("/"): continue
+            if not text: continue
+
+            # Admin commands
+            if text.startswith("/"):
+                handle_command(text)
+                continue
+
+            # Edited post reply
             if waiting:
                 aid = waiting.get("aid")
                 art = pending.get(aid)
