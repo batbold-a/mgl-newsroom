@@ -57,24 +57,37 @@ GLOBAL_FEEDS = [
 
 ALL_FEEDS = MN_FEEDS + GLOBAL_FEEDS
 
+# STRICT financial keywords — article must contain at least one
 KEYWORDS = [
     # Markets
     "market", "stock", "stocks", "S&P", "nasdaq", "rally", "crash",
     "fed", "federal reserve", "interest rate", "inflation", "recession", "GDP",
-    # Commodities — key for Mongolia
-    "coal", "copper", "gold", "silver", "oil", "commodity",
-    "mining", "mineral", "export",
-    # Mongolia specific
-    "mongolia", "mongolian", "oyu tolgoi", "tavan tolgoi", "мхб",
-    "монгол", "хувьцаа", "нүүрс", "зэс", "алт",
-    # Tech & business
-    "AI", "artificial intelligence", "startup", "IPO",
-    "earnings", "revenue", "profit", "quarterly",
-    "apple", "google", "microsoft", "nvidia", "tesla",
+    # Commodities — critical for Mongolia
+    "coal", "copper", "gold", "silver", "oil", "commodity", "mineral",
+    "mining revenue", "mining export", "оюу толгой", "тавантолгой",
+    "oyu tolgoi", "tavan tolgoi",
+    # Mongolian financial terms
+    "мхб", "хувьцаа", "бонд", "хөрөнгө оруулалт", "банк",
+    "инфляц", "ханш", "төгрөг", "эдийн засаг", "экспорт",
+    "борлуулалт", "ашиг", "алдагдал", "санхүү",
+    # English financial terms
+    "IPO", "earnings", "revenue", "profit", "quarterly results",
+    "investment", "investor", "fund", "bond", "yield", "dividend",
+    "bankruptcy", "acquisition", "merger",
     # Crypto
     "bitcoin", "crypto", "ethereum", "blockchain",
-    # Finance
-    "investment", "investor", "fund", "bond", "yield",
+    # Big tech only when market-moving
+    "apple earnings", "google revenue", "microsoft profit",
+    "nvidia earnings", "tesla earnings",
+]
+
+# Hard reject — never post these regardless of keywords
+REJECT_KEYWORDS = [
+    "mma", "boxing", "fight", "wrestler", "tournament", "sports",
+    "football", "basketball", "soccer", "athlete", "champion",
+    "concert", "movie", "film", "celebrity", "entertainment",
+    "weather", "accident", "crime", "police", "court case",
+    "тулаан", "спорт", "тамирчин", "бокс", "цаг агаар",
 ]
 
 BREAKING_WORDS = [
@@ -255,7 +268,7 @@ def claude_write(title, summary, source, day_context, is_mn_source=False):
     if not ANTHROPIC_KEY:
         return None
 
-    prompt = f"""You are a financial news analyst for a Mongolian investment newsletter.
+    prompt = f"""You are a strict financial news editor for a Mongolian investment newsletter. You ONLY write about finance, markets, economy, and investments. If an article is NOT directly related to finance, markets, economy, investments, commodities, crypto, or business — you must respond with exactly: SKIP
 
 Article title: {title}
 Summary: {summary[:400]}
@@ -323,8 +336,14 @@ def process_article(title, summary, source, is_breaking, is_mn_source=False):
     day = now_ub().weekday()
     _, _, _, day_context = SCHEDULE.get(day, ("", "", "", "Summarize key financial news."))
 
-    # Claude writes English content
+    # Claude writes English content — may return SKIP for irrelevant articles
     raw = claude_write(title, summary, source, day_context, is_mn_source)
+
+    # Claude rejected the article as non-financial
+    if raw and raw.strip().upper().startswith("SKIP"):
+        print(f"[CLAUDE SKIP] Not financial: {title[:60]}")
+        return None
+
     headline_en, summary_en, impact_en, rec_en = parse_claude(raw)
 
     # Fallbacks
@@ -727,7 +746,15 @@ def handle_updates():
 
 # ── FEED CHECKER ───────────────────────────────────────────────────────────────
 def is_relevant(title, summary):
+    """Strict relevance check — must match finance keywords AND not match reject list."""
     text = (title + " " + summary).lower()
+
+    # Hard reject non-financial content first
+    if any(r.lower() in text for r in REJECT_KEYWORDS):
+        print(f"[REJECTED] Non-financial content: {title[:60]}")
+        return False
+
+    # Must match at least one financial keyword
     return any(k.lower() in text for k in KEYWORDS)
 
 def check_feeds():
@@ -796,6 +823,8 @@ def check_feeds():
             item["title"], item["summary"],
             item["source"], True, item["is_mn"]
         )
+        if not processed:   # Claude rejected as non-financial
+            continue
         queue_for_approval({
             "id": item["link_id"], "link": item["link"],
             "source": item["source"], "is_breaking": True,
@@ -811,6 +840,8 @@ def check_feeds():
             item["title"], item["summary"],
             item["source"], False, item["is_mn"]
         )
+        if not processed:   # Claude rejected as non-financial
+            continue
         queue_for_approval({
             "id": item["link_id"], "link": item["link"],
             "source": item["source"], "is_breaking": False,
