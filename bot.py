@@ -268,7 +268,26 @@ def claude_write(title, summary, source, day_context, is_mn_source=False):
     if not ANTHROPIC_KEY:
         return None
 
-    prompt = f"""You are a strict financial news editor for a Mongolian investment newsletter. You ONLY write about finance, markets, economy, and investments. If an article is NOT directly related to finance, markets, economy, investments, commodities, crypto, or business — you must respond with exactly: SKIP
+    prompt = f"""You are a financial news editor for a Mongolian investment newsletter.
+
+ACCEPT and write analysis for articles about:
+- Stock markets, indices, trading (any country)
+- Economy, GDP, inflation, interest rates, government budgets
+- Commodities: coal, copper, gold, oil, silver
+- Crypto: Bitcoin, Ethereum, blockchain
+- Big tech companies: Apple, Google, Meta, Amazon, Microsoft, Nvidia, Tesla
+- Banking, fintech, payments, digital currency
+- Business deals: mergers, acquisitions, IPOs, earnings
+- Mongolia: any economic, business, or financial news
+- Energy, infrastructure, data centers, AI industry
+
+SKIP only if the article is clearly about:
+- Pure sports (MMA, football, basketball etc) with NO financial angle
+- Entertainment, celebrities, movies, music
+- Weather, natural disasters (unless major economic impact)
+- Crime, accidents, politics (unless direct market impact)
+
+If unsure — ACCEPT it. Respond with SKIP only when obviously non-financial.
 
 Article title: {title}
 Summary: {summary[:400]}
