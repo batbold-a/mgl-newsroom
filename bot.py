@@ -633,145 +633,110 @@ def post_custom(text):
 # ── MORNING BRIEF ──────────────────────────────────────────────────────────────
 def post_morning_brief():
     print("[MORNING BRIEF] Fetching all data...")
-    ub       = now_ub()
-    date_str = ub.strftime("%Y.%m.%d")
+    ub        = now_ub()
+    date_str  = ub.strftime("%Y.%m.%d")
     day_names = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
-    day_mn   = day_names[ub.weekday()]
+    day_mn    = day_names[ub.weekday()]
 
-    # Fetch all data
     assets        = fetch_assets()
     mse_stocks    = fetch_mse_top10()
     global_stocks = fetch_global_stocks()
 
-    # ── PREMIUM POST 1: МХБ Тop 10 stocks ──────────────────────────────────
+    # POST 1 — МХБ Top 10
     mse_lines = ""
-    for i, s in enumerate(mse_stocks, 1):
-        emoji = "🟢" if s["arrow"] == "▲" else "🔴"
-        mse_lines += f"{emoji} <b>{s['symbol']}</b>  ₮{s['price']}  {s['arrow']}{s['pct']}
-"
-
+    for s in mse_stocks:
+        icon = "🟢" if s["arrow"] == "▲" else "🔴"
+        mse_lines += icon + " <b>" + s["symbol"] + "</b>  ₮" + s["price"] + "  " + s["arrow"] + s["pct"] + "\n"
     if not mse_lines:
-        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>"
+        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>\n"
 
     premium_mse = (
-        f"🇲🇳 <b>МХБ — Өнөөдрийн Топ 10 хувьцаа</b>
-"
-        f"<i>{day_mn}, {date_str}</i>
-"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"{mse_lines}"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"<i>Эх сурвалж: stock.bbe.mn</i>"
+        "🇲🇳 <b>МХБ — Өнөөдрийн Топ 10 хувьцаа</b>\n"
+        "<i>" + day_mn + ", " + date_str + "</i>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        + mse_lines +
+        "━━━━━━━━━━━━━━━━━━\n"
+        "<i>Эх сурвалж: stock.bbe.mn</i>"
     )
 
-    # ── PREMIUM POST 2: 10 Assets (crypto + metals + forex) ────────────────
-    asset_lines = ""
+    # POST 2 — 10 Assets
     asset_emojis = {
         "Bitcoin": "₿", "Ethereum": "💎", "BNB": "🔶",
         "XRP": "💧", "Solana": "🌊", "Алт": "🥇",
         "Мөнгө": "🥈", "Платин": "⚪", "USD/MNT": "💵", "USD/CNY": "🇨🇳"
     }
+    asset_lines = ""
     for name, data in list(assets.items())[:10]:
-        emoji = asset_emojis.get(name, "📊")
-        arrow = data.get("arrow", "—")
-        chg   = data.get("chg", "—")
-        chg_str = f"  {arrow}{chg}" if chg != "—" else ""
-        asset_lines += f"{emoji} <b>{name}</b>  {data['price']}{chg_str}
-"
+        icon  = asset_emojis.get(name, "📊")
+        arrow = data.get("arrow", "")
+        chg   = data.get("chg", "")
+        chg_str = "  " + arrow + chg if chg and chg != "—" else ""
+        asset_lines += icon + " <b>" + name + "</b>  " + data["price"] + chg_str + "\n"
 
     premium_assets = (
-        f"💰 <b>10 Хөрөнгийн үнэ</b>
-"
-        f"<i>{day_mn}, {date_str}</i>
-"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"{asset_lines}"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"<i>Крипто: CoinGecko | Металл: Metals.live</i>"
+        "💰 <b>10 Хөрөнгийн үнэ</b>\n"
+        "<i>" + day_mn + ", " + date_str + "</i>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        + asset_lines +
+        "━━━━━━━━━━━━━━━━━━\n"
+        "<i>Крипто: CoinGecko | Металл: Metals.live</i>"
     )
 
-    # ── PREMIUM POST 3: Global stocks ──────────────────────────────────────
-    global_lines = ""
+    # POST 3 — Global stocks
     global_emojis = {
-        "S&P 500": "🇺🇸", "NASDAQ": "💻",
-        "Apple": "🍎", "Nvidia": "🤖",
+        "S&P 500": "🇺🇸", "NASDAQ": "💻", "Apple": "🍎", "Nvidia": "🤖"
     }
+    global_lines = ""
     for name, data in global_stocks.items():
-        emoji = global_emojis.get(name, "📈")
-        global_lines += (
-            f"{emoji} <b>{name}</b>  {data['price']}"
-            f"  {data['arrow']}{data['pct']}
-"
-        )
-
+        icon = global_emojis.get(name, "📈")
+        global_lines += icon + " <b>" + name + "</b>  " + data["price"] + "  " + data["arrow"] + data["pct"] + "\n"
     btc = assets.get("Bitcoin", {})
     if btc:
-        global_lines += f"₿ <b>Bitcoin</b>  {btc['price']}  {btc.get('arrow','')}{btc.get('chg','')}
-"
+        global_lines += "₿ <b>Bitcoin</b>  " + btc.get("price","N/A") + "  " + btc.get("arrow","") + btc.get("chg","") + "\n"
+    if not global_lines:
+        global_lines = "<i>Өгөгдөл татаж чадсангүй</i>\n"
 
     premium_global = (
-        f"🌍 <b>Дэлхийн томоохон хөрөнгүүд</b>
-"
-        f"<i>{day_mn}, {date_str}</i>
-"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"{global_lines if global_lines else '<i>Өгөгдөл татаж чадсангүй</i>'}"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"<i>Эх сурвалж: Yahoo Finance</i>"
+        "🌍 <b>Дэлхийн томоохон хөрөнгүүд</b>\n"
+        "<i>" + day_mn + ", " + date_str + "</i>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        + global_lines +
+        "━━━━━━━━━━━━━━━━━━\n"
+        "<i>Эх сурвалж: Yahoo Finance</i>"
     )
 
-    # ── FREE CHANNEL: Short teaser ──────────────────────────────────────────
-    btc_price = assets.get("Bitcoin", {}).get("price", "N/A")
+    # FREE CHANNEL teaser
+    btc_price  = assets.get("Bitcoin", {}).get("price", "N/A")
     gold_price = assets.get("Алт", {}).get("price", "N/A")
-    usd_mnt   = assets.get("USD/MNT", {}).get("price", "N/A")
-    top_stock = mse_stocks[0] if mse_stocks else None
+    usd_mnt    = assets.get("USD/MNT", {}).get("price", "N/A")
+    top_stock  = mse_stocks[0] if mse_stocks else None
 
     free_post = (
-        f"🌅 <b>Өглөөний зах зээлийн тойм</b>
-"
-        f"<i>{day_mn}, {date_str}</i>
-
-"
-        f"━━━━━━━━━━━━━━━━━━
-"
-        f"₿ Bitcoin:  <b>{btc_price}</b>
-"
-        f"🥇 Алт:     <b>{gold_price}</b>
-"
-        f"💵 USD/MNT: <b>{usd_mnt}</b>
-"
+        "🌅 <b>Өглөөний зах зээлийн тойм</b>\n"
+        "<i>" + day_mn + ", " + date_str + "</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "₿ Bitcoin:  <b>" + btc_price + "</b>\n"
+        "🥇 Алт:     <b>" + gold_price + "</b>\n"
+        "💵 USD/MNT: <b>" + usd_mnt + "</b>\n"
     )
     if top_stock:
-        emoji = "🟢" if top_stock["arrow"] == "▲" else "🔴"
-        free_post += f"{emoji} МХБ топ: <b>{top_stock['symbol']}</b> ₮{top_stock['price']} {top_stock['arrow']}{top_stock['pct']}
-"
-
+        icon = "🟢" if top_stock["arrow"] == "▲" else "🔴"
+        free_post += icon + " МХБ топ: <b>" + top_stock["symbol"] + "</b> ₮" + top_stock["price"] + " " + top_stock["arrow"] + top_stock["pct"] + "\n"
     free_post += (
-        f"━━━━━━━━━━━━━━━━━━
-
-"
-        f"📊 МХБ Топ 10, 10 хөрөнгийн үнэ, дэлхийн зах зээлийг Premium сувгаас аваарай!
-"
-        f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 МХБ Топ 10, 10 хөрөнгийн үнэ, дэлхийн зах зээлийг Premium сувгаас аваарай!\n"
+        "➡️ <b>Нэгдэх: " + PREMIUM_INVITE + "</b>"
     )
 
-    # Post to premium — 3 separate messages
     send(PREMIUM_CHANNEL, premium_mse)
     time.sleep(3)
     send(PREMIUM_CHANNEL, premium_assets)
     time.sleep(3)
     send(PREMIUM_CHANNEL, premium_global)
     time.sleep(2)
-
-    # Post teaser to free channel
     send(FREE_CHANNEL, free_post)
-    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)} stocks, Assets: {len(assets)}")
+    print("[MORNING BRIEF] Done — MSE: " + str(len(mse_stocks)) + " stocks, Assets: " + str(len(assets)))
+
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
