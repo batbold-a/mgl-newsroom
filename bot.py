@@ -208,35 +208,153 @@ def answer_cb(cb_id, text):
     tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
 
 # ── PRICE FETCHER ──────────────────────────────────────────────────────────────
-def fetch_prices():
-    prices = {"bitcoin": "N/A", "ethereum": "N/A",
-               "gold": "N/A", "usd_mnt": "N/A"}
+def fetch_mse_top10():
+    """Fetch top 10 MSE stocks by volume from stock.bbe.mn."""
+    try:
+        from html.parser import HTMLParser
+        r = requests.get("https://stock.bbe.mn/", timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        stocks = []
+        lines = r.text.split("\n")
+        for line in lines:
+            if "/Home/Stock/" in line and "<td>" in line:
+                continue
+        # Parse table rows
+        import re
+        rows = re.findall(
+            r"Home/Stock/([A-Z]+).*?>([\d,\.]+)</td>.*?>([\d,\.]+)</td>.*?([-\d,\.]+)</td>.*?([-\d\.]+%)</td>",
+            r.text, re.DOTALL
+        )
+        for row in rows[:10]:
+            symbol, prev, curr, change, pct = row
+            arrow = "▲" if not change.startswith("-") else "▼"
+            stocks.append({
+                "symbol": symbol,
+                "price":  curr.strip(),
+                "change": change.strip(),
+                "pct":    pct.strip(),
+                "arrow":  arrow,
+            })
+        return stocks[:10]
+    except Exception as e:
+        print(f"[MSE ERROR] {e}")
+        return []
+
+def fetch_global_stocks():
+    """Fetch major global stock indices and prices."""
+    stocks = {}
+    try:
+        # Yahoo Finance compatible API
+        symbols = {
+            "S&P 500": "^GSPC",
+            "NASDAQ":  "^IXIC",
+            "Apple":   "AAPL",
+            "Nvidia":  "NVDA",
+        }
+        for name, sym in symbols.items():
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                    "?interval=1d&range=2d",
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=10
+                )
+                d = r.json()
+                meta  = d["chart"]["result"][0]["meta"]
+                price = meta.get("regularMarketPrice", 0)
+                prev  = meta.get("chartPreviousClose", price)
+                chg   = price - prev
+                pct   = (chg / prev * 100) if prev else 0
+                arrow = "▲" if chg >= 0 else "▼"
+                stocks[name] = {
+                    "price": f"{price:,.2f}",
+                    "pct":   f"{abs(pct):.2f}%",
+                    "arrow": arrow,
+                }
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[GLOBAL STOCKS ERROR] {e}")
+    return stocks
+
+def fetch_assets():
+    """Fetch 10 key assets: crypto + metals + forex."""
+    assets = {}
+
+    # Crypto — Bitcoin, Ethereum, BNB, XRP, SOL
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price"
-            "?ids=bitcoin,ethereum&vs_currencies=usd", timeout=10)
+            "?ids=bitcoin,ethereum,binancecoin,ripple,solana"
+            "&vs_currencies=usd&include_24hr_change=true",
+            timeout=10
+        )
         d = r.json()
-        prices["bitcoin"]  = f"${d['bitcoin']['usd']:,.0f}"
-        prices["ethereum"] = f"${d['ethereum']['usd']:,.0f}"
+        mapping = {
+            "bitcoin":     "Bitcoin",
+            "ethereum":    "Ethereum",
+            "binancecoin": "BNB",
+            "ripple":      "XRP",
+            "solana":      "Solana",
+        }
+        for key, name in mapping.items():
+            if key in d:
+                price = d[key]["usd"]
+                chg   = d[key].get("usd_24h_change", 0)
+                arrow = "▲" if chg >= 0 else "▼"
+                assets[name] = {
+                    "price": f"${price:,.2f}" if price < 100 else f"${price:,.0f}",
+                    "chg":   f"{abs(chg):.2f}%",
+                    "arrow": arrow,
+                }
     except Exception as e:
-        print(f"[PRICE] Crypto error: {e}")
+        print(f"[CRYPTO ERROR] {e}")
+
+    # Metals — Gold, Silver, Platinum
     try:
-        r = requests.get(
-            "https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
-        mnt = r.json().get("rates", {}).get("MNT")
-        if mnt:
-            prices["usd_mnt"] = f"₮{mnt:,.0f}"
+        for metal, symbol in [("Алт", "gold"), ("Мөнгө", "silver"), ("Платин", "platinum")]:
+            r = requests.get(f"https://api.metals.live/v1/spot/{symbol}", timeout=10)
+            d = r.json()
+            price = d[0].get("price") if isinstance(d, list) else d.get("price")
+            if price:
+                assets[metal] = {
+                    "price": f"${price:,.2f}/oz",
+                    "chg":   "—",
+                    "arrow": "—",
+                }
     except Exception as e:
-        print(f"[PRICE] USD/MNT error: {e}")
+        print(f"[METALS ERROR] {e}")
+
+    # Forex
     try:
-        r = requests.get(
-            "https://api.metals.live/v1/spot/gold", timeout=10)
-        data = r.json()
-        if isinstance(data, list) and data:
-            prices["gold"] = f"${data[0].get('price', 'N/A'):,.0f}/oz"
+        r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+        rates = r.json().get("rates", {})
+        if "MNT" in rates:
+            assets["USD/MNT"] = {
+                "price": f"₮{rates['MNT']:,.0f}",
+                "chg":   "—",
+                "arrow": "—",
+            }
+        if "CNY" in rates:
+            assets["USD/CNY"] = {
+                "price": f"¥{rates['CNY']:.4f}",
+                "chg":   "—",
+                "arrow": "—",
+            }
     except Exception as e:
-        print(f"[PRICE] Gold error: {e}")
-    return prices
+        print(f"[FOREX ERROR] {e}")
+
+    return assets
+
+def fetch_prices():
+    """Legacy wrapper — keeps compatibility."""
+    assets = fetch_assets()
+    return {
+        "bitcoin":  assets.get("Bitcoin", {}).get("price", "N/A"),
+        "ethereum": assets.get("Ethereum", {}).get("price", "N/A"),
+        "gold":     assets.get("Алт", {}).get("price", "N/A"),
+        "usd_mnt":  assets.get("USD/MNT", {}).get("price", "N/A"),
+    }
 
 # ── GOOGLE TRANSLATE ───────────────────────────────────────────────────────────
 def translate(text):
@@ -514,41 +632,146 @@ def post_custom(text):
 
 # ── MORNING BRIEF ──────────────────────────────────────────────────────────────
 def post_morning_brief():
-    print("[MORNING BRIEF] Posting...")
-    p = fetch_prices()
-    date_str = now_ub().strftime("%Y.%m.%d")
+    print("[MORNING BRIEF] Fetching all data...")
+    ub       = now_ub()
+    date_str = ub.strftime("%Y.%m.%d")
     day_names = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
-    day_mn = day_names[now_ub().weekday()]
+    day_mn   = day_names[ub.weekday()]
+
+    # Fetch all data
+    assets        = fetch_assets()
+    mse_stocks    = fetch_mse_top10()
+    global_stocks = fetch_global_stocks()
+
+    # ── PREMIUM POST 1: МХБ Тop 10 stocks ──────────────────────────────────
+    mse_lines = ""
+    for i, s in enumerate(mse_stocks, 1):
+        emoji = "🟢" if s["arrow"] == "▲" else "🔴"
+        mse_lines += f"{emoji} <b>{s['symbol']}</b>  ₮{s['price']}  {s['arrow']}{s['pct']}
+"
+
+    if not mse_lines:
+        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>"
+
+    premium_mse = (
+        f"🇲🇳 <b>МХБ — Өнөөдрийн Топ 10 хувьцаа</b>
+"
+        f"<i>{day_mn}, {date_str}</i>
+"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"{mse_lines}"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"<i>Эх сурвалж: stock.bbe.mn</i>"
+    )
+
+    # ── PREMIUM POST 2: 10 Assets (crypto + metals + forex) ────────────────
+    asset_lines = ""
+    asset_emojis = {
+        "Bitcoin": "₿", "Ethereum": "💎", "BNB": "🔶",
+        "XRP": "💧", "Solana": "🌊", "Алт": "🥇",
+        "Мөнгө": "🥈", "Платин": "⚪", "USD/MNT": "💵", "USD/CNY": "🇨🇳"
+    }
+    for name, data in list(assets.items())[:10]:
+        emoji = asset_emojis.get(name, "📊")
+        arrow = data.get("arrow", "—")
+        chg   = data.get("chg", "—")
+        chg_str = f"  {arrow}{chg}" if chg != "—" else ""
+        asset_lines += f"{emoji} <b>{name}</b>  {data['price']}{chg_str}
+"
+
+    premium_assets = (
+        f"💰 <b>10 Хөрөнгийн үнэ</b>
+"
+        f"<i>{day_mn}, {date_str}</i>
+"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"{asset_lines}"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"<i>Крипто: CoinGecko | Металл: Metals.live</i>"
+    )
+
+    # ── PREMIUM POST 3: Global stocks ──────────────────────────────────────
+    global_lines = ""
+    global_emojis = {
+        "S&P 500": "🇺🇸", "NASDAQ": "💻",
+        "Apple": "🍎", "Nvidia": "🤖",
+    }
+    for name, data in global_stocks.items():
+        emoji = global_emojis.get(name, "📈")
+        global_lines += (
+            f"{emoji} <b>{name}</b>  {data['price']}"
+            f"  {data['arrow']}{data['pct']}
+"
+        )
+
+    btc = assets.get("Bitcoin", {})
+    if btc:
+        global_lines += f"₿ <b>Bitcoin</b>  {btc['price']}  {btc.get('arrow','')}{btc.get('chg','')}
+"
+
+    premium_global = (
+        f"🌍 <b>Дэлхийн томоохон хөрөнгүүд</b>
+"
+        f"<i>{day_mn}, {date_str}</i>
+"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"{global_lines if global_lines else '<i>Өгөгдөл татаж чадсангүй</i>'}"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"<i>Эх сурвалж: Yahoo Finance</i>"
+    )
+
+    # ── FREE CHANNEL: Short teaser ──────────────────────────────────────────
+    btc_price = assets.get("Bitcoin", {}).get("price", "N/A")
+    gold_price = assets.get("Алт", {}).get("price", "N/A")
+    usd_mnt   = assets.get("USD/MNT", {}).get("price", "N/A")
+    top_stock = mse_stocks[0] if mse_stocks else None
 
     free_post = (
-        f"🌅 <b>Өглөөний зах зээлийн тойм</b>\n"
-        f"<i>{day_mn}, {date_str}</i>\n\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"₿ Bitcoin:  <b>{p['bitcoin']}</b>\n"
-        f"💎 Ethereum: <b>{p['ethereum']}</b>\n"
-        f"🥇 Алт:     <b>{p['gold']}</b>\n"
-        f"💵 USD/MNT: <b>{p['usd_mnt']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 Дэлгэрэнгүй шинжилгээ Premium сувгаас\n"
-        f"➡️ <b>{PREMIUM_INVITE}</b>"
+        f"🌅 <b>Өглөөний зах зээлийн тойм</b>
+"
+        f"<i>{day_mn}, {date_str}</i>
+
+"
+        f"━━━━━━━━━━━━━━━━━━
+"
+        f"₿ Bitcoin:  <b>{btc_price}</b>
+"
+        f"🥇 Алт:     <b>{gold_price}</b>
+"
+        f"💵 USD/MNT: <b>{usd_mnt}</b>
+"
+    )
+    if top_stock:
+        emoji = "🟢" if top_stock["arrow"] == "▲" else "🔴"
+        free_post += f"{emoji} МХБ топ: <b>{top_stock['symbol']}</b> ₮{top_stock['price']} {top_stock['arrow']}{top_stock['pct']}
+"
+
+    free_post += (
+        f"━━━━━━━━━━━━━━━━━━
+
+"
+        f"📊 МХБ Топ 10, 10 хөрөнгийн үнэ, дэлхийн зах зээлийг Premium сувгаас аваарай!
+"
+        f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>"
     )
 
-    premium_post = (
-        f"🌅 <b>Morning Market Brief</b>\n"
-        f"<i>{day_mn}, {date_str} — Ulaanbaatar</i>\n\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"₿ Bitcoin:  <b>{p['bitcoin']}</b>\n"
-        f"💎 Ethereum: <b>{p['ethereum']}</b>\n"
-        f"🥇 Gold:    <b>{p['gold']}</b>\n"
-        f"💵 USD/MNT: <b>{p['usd_mnt']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"<i>News analysis starts at 11:00 AM. Breaking alerts sent immediately.</i>"
-    )
-
-    send(FREE_CHANNEL, free_post)
+    # Post to premium — 3 separate messages
+    send(PREMIUM_CHANNEL, premium_mse)
+    time.sleep(3)
+    send(PREMIUM_CHANNEL, premium_assets)
+    time.sleep(3)
+    send(PREMIUM_CHANNEL, premium_global)
     time.sleep(2)
-    send(PREMIUM_CHANNEL, premium_post)
-    print(f"[MORNING BRIEF] Done")
+
+    # Post teaser to free channel
+    send(FREE_CHANNEL, free_post)
+    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)} stocks, Assets: {len(assets)}")
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
