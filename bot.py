@@ -966,7 +966,7 @@ def post_morning_brief():
         icon = "🟢" if s["arrow"] == "▲" else "🔴"
         mse_lines += f"{icon} <b>{s['symbol']}</b>  ₮{s['price']}  {s['arrow']}{s['pct']}\n"
     if not mse_lines:
-        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>\n"
+        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>"
 
     premium_mse = (
         f"🇲🇳 <b>МХБ — Өнөөдрийн Топ 10 хувьцаа</b>\n"
@@ -1036,8 +1036,7 @@ def post_morning_brief():
     send(PREMIUM_CHANNEL, premium_assets); time.sleep(3)
     send(PREMIUM_CHANNEL, premium_global); time.sleep(2)
     send(FREE_CHANNEL, free_post)
-    print("[MORNING BRIEF] Done — MSE: " + str(len(mse_stocks)) + " stocks, Assets: " + str(len(assets)))
-
+    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)} stocks, Assets: {len(assets)}")
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
@@ -1302,7 +1301,7 @@ def main():
     print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ missing'}")
     print(f"  Google  : {'✅' if GOOGLE_TRANSLATE else '❌ missing'}")
     print(f"  Bank    : {BANK_NAME} — {BANK_ACCOUNT}")
-    print(f"  Price   : ₮{PRICE_MNT:,}/month")
+    print(f"  Price   : ₮{PRICE_MONTHLY:,}/сар | ₮{PRICE_YEARLY:,}/жил")
     print("=" * 55)
 
     if not BOT_TOKEN:     print("[FATAL] BOT_TOKEN missing!");     return
@@ -1312,7 +1311,7 @@ def main():
         "🤖 <b>MGL Newsroom Bot — with Subscription Manager</b>\n\n"
         f"📢 Free: {FREE_CHANNEL}\n"
         f"💎 Premium: private channel\n"
-        f"💳 Price: ₮{PRICE_MNT:,}/month\n"
+        f"💳 Сарын: ₮{PRICE_MONTHLY:,} | Жилийн: ₮{PRICE_YEARLY:,}\n"
         f"🏦 Bank: {BANK_NAME}\n\n"
         "<b>Subscription commands:</b>\n"
         "/sublist — active subscribers\n"
