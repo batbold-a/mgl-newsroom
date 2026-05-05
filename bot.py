@@ -966,7 +966,7 @@ def post_morning_brief():
         icon = "🟢" if s["arrow"] == "▲" else "🔴"
         mse_lines += f"{icon} <b>{s['symbol']}</b>  ₮{s['price']}  {s['arrow']}{s['pct']}\n"
     if not mse_lines:
-        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>"
+        mse_lines = "<i>МХБ-ийн өгөгдөл татаж чадсангүй</i>\n"
 
     premium_mse = (
         f"🇲🇳 <b>МХБ — Өнөөдрийн Топ 10 хувьцаа</b>\n"
@@ -1036,7 +1036,8 @@ def post_morning_brief():
     send(PREMIUM_CHANNEL, premium_assets); time.sleep(3)
     send(PREMIUM_CHANNEL, premium_global); time.sleep(2)
     send(FREE_CHANNEL, free_post)
-    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)} stocks, Assets: {len(assets)}")
+    print("[MORNING BRIEF] Done — MSE: " + str(len(mse_stocks)) + " stocks, Assets: " + str(len(assets)))
+
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
