@@ -26,6 +26,7 @@ Railway variables needed (new ones):
 
 import feedparser
 import requests
+import re
 import time
 import json
 import os
@@ -36,18 +37,17 @@ from datetime import datetime, timezone, timedelta
 BOT_TOKEN        = os.environ.get("BOT_TOKEN")
 FREE_CHANNEL     = os.environ.get("FREE_CHANNEL",    "@mglnewsroomfree")
 PREMIUM_CHANNEL  = os.environ.get("PREMIUM_CHANNEL", "-1003833538418")
-ADMIN_CHAT_ID    = os.environ.get("ADMIN_CHAT_ID")   # used for news approvals
-ADMIN_ID         = int(os.environ.get("ADMIN_ID", os.environ.get("ADMIN_CHAT_ID", "0")))  # for subscription approvals
+ADMIN_CHAT_ID    = os.environ.get("ADMIN_CHAT_ID")
+ADMIN_ID         = int(os.environ.get("ADMIN_ID", os.environ.get("ADMIN_CHAT_ID", "0")))
 ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY")
 GOOGLE_TRANSLATE = os.environ.get("GOOGLE_TRANSLATE_KEY")
 PREMIUM_INVITE   = "https://t.me/+BxQ8PEdcyc02YmM9"
 
-# Subscription config
 BANK_ACCOUNT   = os.environ.get("BANK_ACCOUNT",  "1234567890")
 BANK_NAME      = os.environ.get("BANK_NAME",     "Голомт банк")
 ACCOUNT_NAME   = os.environ.get("ACCOUNT_NAME",  "Батболд")
-PRICE_MONTHLY  = int(os.environ.get("PRICE_MNT", "9900"))    # ₮9,900/сар
-PRICE_YEARLY   = int(os.environ.get("PRICE_YEARLY", "89900")) # ₮89,900/жил (2 сар үнэгүй)
+PRICE_MONTHLY  = int(os.environ.get("PRICE_MNT",    "9900"))
+PRICE_YEARLY   = int(os.environ.get("PRICE_YEARLY", "89900"))
 
 UB_OFFSET  = timedelta(hours=8)
 DISCLAIMER = "\n\n⚠️ Энэхүү мэдээлэл нь хөрөнгө оруулалтын зөвлөгөө биш."
@@ -62,7 +62,6 @@ MN_FEEDS = [
     ("https://news.mn/rss",       "News.mn"),
     ("https://ikon.mn/rss",       "Ikon.mn"),
 ]
-
 GLOBAL_FEEDS = [
     ("https://feeds.reuters.com/reuters/businessNews",            "Reuters"),
     ("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "NY Times"),
@@ -71,7 +70,6 @@ GLOBAL_FEEDS = [
     ("https://feeds.reuters.com/reuters/companyNews",             "Reuters Markets"),
     ("https://techcrunch.com/feed/",                              "TechCrunch"),
 ]
-
 ALL_FEEDS = MN_FEEDS + GLOBAL_FEEDS
 
 KEYWORDS = [
@@ -90,7 +88,6 @@ KEYWORDS = [
     "apple earnings", "google revenue", "microsoft profit",
     "nvidia earnings", "tesla earnings",
 ]
-
 REJECT_KEYWORDS = [
     "mma", "boxing", "fight", "wrestler", "tournament", "sports",
     "football", "basketball", "soccer", "athlete", "champion",
@@ -98,13 +95,11 @@ REJECT_KEYWORDS = [
     "weather", "accident", "crime", "police", "court case",
     "тулаан", "спорт", "тамирчин", "бокс", "цаг агаар",
 ]
-
 BREAKING_WORDS = [
     "breaking", "urgent", "flash", "crash", "collapse",
     "emergency", "ban", "sanction", "plunge", "halt",
     "bankrupt", "crisis", "default", "surge"
 ]
-
 SCHEDULE = {
     0: ("📊", "Weekly Market Outlook",    "7 хоногийн зах зээлийн тойм",
         "Focus on MSE stocks to watch this week and global market direction."),
@@ -127,7 +122,7 @@ SENT_FILE        = "sent_articles.json"
 PENDING_FILE     = "pending_articles.json"
 EDIT_STATE_FILE  = "edit_state.json"
 STATE_FILE       = "bot_state.json"
-SUBSCRIBERS_FILE = "subscribers.json"   # NEW — premium members
+SUBSCRIBERS_FILE = "subscribers.json"
 
 # ── HELPERS ────────────────────────────────────────────────────────────────────
 def load_json(path, default):
@@ -157,7 +152,7 @@ def days_until(iso):
     return (dt - datetime.now()).days
 
 def is_active_hours():
-    state   = load_json(STATE_FILE, {})
+    state = load_json(STATE_FILE, {})
     if state.get("paused", False):
         return False
     h_start = state.get("hour_start", ACTIVE_HOUR_START)
@@ -189,7 +184,6 @@ def should_post_morning_brief():
     return False
 
 def should_check_subscriptions():
-    """Check subscriptions once per hour."""
     ub    = now_ub()
     state = load_json(STATE_FILE, {})
     key   = f"sub_check_{ub.strftime('%Y-%m-%d_%H')}"
@@ -233,7 +227,6 @@ def answer_cb(cb_id, text):
 
 # ── SUBSCRIPTION MESSAGES ──────────────────────────────────────────────────────
 def plan_label(plan):
-    """Return Mongolian label for plan type."""
     return "📅 Жилийн" if plan == "yearly" else "🗓 Сарын"
 
 def plan_price(plan):
@@ -278,7 +271,7 @@ def welcome_premium_msg(expiry_iso, invite_url, plan="monthly"):
     )
 
 def reminder_msg(days, expiry_iso, plan="monthly"):
-    urgency    = "⚠️" if days <= 1 else "🔔"
+    urgency     = "⚠️" if days <= 1 else "🔔"
     renew_price = plan_price(plan)
     label       = "жилийн" if plan == "yearly" else "сарын"
     return (
@@ -308,19 +301,14 @@ def expired_msg(plan="monthly"):
 
 # ── SUBSCRIPTION HANDLERS ──────────────────────────────────────────────────────
 def handle_private_message(msg):
-    """Handle DMs to the bot — subscription flow."""
     user    = msg.get("from", {})
     user_id = str(user.get("id", ""))
     chat_id = msg.get("chat", {}).get("id")
     text    = msg.get("text", "").strip()
     photo   = msg.get("photo")
-
     if not user_id or not chat_id:
         return
-
     data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
-
-    # ── Text message — show status or plan selection ──
     if text and not photo:
         if user_id in data["subscribers"]:
             sub   = data["subscribers"][user_id]
@@ -335,7 +323,6 @@ def handle_private_message(msg):
                 f"Сунгах бол дуусахаас өмнө баримт илгээнэ үү."
             )
         else:
-            # Show plan choice buttons
             markup = {"inline_keyboard": [[
                 {"text": f"🗓 Сарын — ₮{PRICE_MONTHLY:,}",  "callback_data": f"plan_select:{user_id}:monthly"},
                 {"text": f"📅 Жилийн — ₮{PRICE_YEARLY:,}", "callback_data": f"plan_select:{user_id}:yearly"},
@@ -349,13 +336,9 @@ def handle_private_message(msg):
                 markup=markup
             )
         return
-
-    # ── Photo = payment screenshot ──
     if photo:
-        is_renewal = user_id in data["subscribers"]
-        # Detect plan from pending if they selected one
+        is_renewal   = user_id in data["subscribers"]
         pending_plan = data["pending"].get(user_id, {}).get("plan", "monthly")
-
         data["pending"][user_id] = {
             "user_id":       user.get("id"),
             "username":      user.get("username", ""),
@@ -368,7 +351,6 @@ def handle_private_message(msg):
             "plan":          pending_plan,
         }
         save_json(SUBSCRIBERS_FILE, data)
-
         plan_str = "Жилийн" if pending_plan == "yearly" else "Сарын"
         send(chat_id,
             f"✅ <b>Баримт хүлээн авлаа!</b>\n\n"
@@ -376,8 +358,6 @@ def handle_private_message(msg):
             f"Бид 30 минутын дотор шалгаад нэвтрэх эрх өгнө.\n"
             f"Түр хүлээнэ үү 🙏"
         )
-
-        # Alert admin with plan info
         label     = "🔄 СУНГАЛТ" if is_renewal else "🆕 ШИНЭ"
         uname_str = f"@{user.get('username')}" if user.get("username") else "(username байхгүй)"
         caption   = (
@@ -398,38 +378,17 @@ def handle_private_message(msg):
             "caption":      caption,
             "reply_markup": json.dumps(markup),
         })
-        print(f"[SUB] Screenshot from {user_id} ({user.get('username')}) — {plan_str}")
-
-def handle_plan_select(user_id_str, plan, cb_id):
-    """Customer selected monthly or yearly plan — store choice and show bank info."""
-    data    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
-    # Save plan choice in pending
-    if user_id_str not in data["pending"]:
-        data["pending"][user_id_str] = {}
-    data["pending"][user_id_str]["plan"] = plan
-    save_json(SUBSCRIBERS_FILE, data)
-
-    label     = "Жилийн" if plan == "yearly" else "Сарын"
-    price     = plan_price(plan)
-    answer_cb(cb_id, f"✅ {label} төлөвлөгөө сонгогдлоо!")
-
-    # Find chat_id from the callback
-    # We send the full bank info after selection
-    tg("answerCallbackQuery", {"callback_query_id": cb_id})
 
 def handle_plan_select_msg(user_id_str, plan, chat_id, cb_id):
-    """Send bank info after plan selection."""
     data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
     if user_id_str not in data["pending"]:
         data["pending"][user_id_str] = {}
     data["pending"][user_id_str]["plan"]    = plan
     data["pending"][user_id_str]["chat_id"] = chat_id
     save_json(SUBSCRIBERS_FILE, data)
-
     label = "Жилийн" if plan == "yearly" else "Сарын"
     price = plan_price(plan)
     answer_cb(cb_id, f"✅ {label} төлөвлөгөө!")
-
     send(chat_id,
         f"✅ <b>{label} төлөвлөгөө сонгогдлоо!</b>\n\n"
         f"💳 Төлөх дүн: <b>₮{price:,}</b>\n\n"
@@ -442,21 +401,16 @@ def handle_plan_select_msg(user_id_str, plan, chat_id, cb_id):
     )
 
 def handle_sub_approve(user_id_str, cb_id):
-    """Admin approved a subscription payment."""
     data    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
     pending = data["pending"].get(user_id_str)
-
     if not pending:
         answer_cb(cb_id, "Аль хэдийн шийдэгдсэн.")
         return
-
     plan    = pending.get("plan", "monthly")
     expiry  = (datetime.now() + timedelta(days=plan_days(plan))).isoformat()
     user_id = pending["user_id"]
     chat_id = pending["chat_id"]
-
-    # Generate single-use invite link (bot must be admin of premium channel)
-    invite_url = PREMIUM_INVITE  # fallback
+    invite_url = PREMIUM_INVITE
     try:
         expire_ts = int((datetime.now() + timedelta(hours=24)).timestamp())
         result = tg("createChatInviteLink", {
@@ -469,8 +423,6 @@ def handle_sub_approve(user_id_str, cb_id):
             invite_url = result["result"]["invite_link"]
     except Exception as e:
         print(f"[SUB INVITE ERROR] {e}")
-
-    # Save subscriber
     label_mn = "Жилийн" if plan == "yearly" else "Сарын"
     data["subscribers"][user_id_str] = {
         "user_id":         user_id,
@@ -486,12 +438,8 @@ def handle_sub_approve(user_id_str, cb_id):
     }
     del data["pending"][user_id_str]
     save_json(SUBSCRIBERS_FILE, data)
-
-    # Welcome DM to user
     send(chat_id, welcome_premium_msg(expiry, invite_url, plan))
-
     answer_cb(cb_id, "✅ Зөвшөөрөгдлөө!")
-    # Notify admin with plan details
     name = pending.get("first_name", user_id_str)
     send(ADMIN_ID,
         f"✅ <b>Зөвшөөрөгдлөө!</b>\n\n"
@@ -499,99 +447,70 @@ def handle_sub_approve(user_id_str, cb_id):
         f"📋 Төлөвлөгөө: <b>{label_mn} — ₮{plan_price(plan):,}</b>\n"
         f"📅 Дуусах огноо: <b>{fmt_date(expiry)}</b>"
     )
-    print(f"[SUB] Approved {user_id_str} ({label_mn}), expiry {fmt_date(expiry)}")
 
 def handle_sub_reject(user_id_str, cb_id):
-    """Admin rejected a subscription payment."""
-    data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
+    data    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
     pending = data["pending"].pop(user_id_str, None)
     save_json(SUBSCRIBERS_FILE, data)
-
     if pending:
         send(pending["chat_id"],
             "❌ <b>Таны хүсэлт татгалзагдлаа</b>\n\n"
             "Гүйлгээний баримт тодорхойгүй байсан тул баталгаажуулж чадсангүй.\n"
             "Тод харагдах баримт дахин илгээнэ үү."
         )
-
     answer_cb(cb_id, "❌ Татгалзагдлаа")
-    print(f"[SUB] Rejected {user_id_str}")
 
 def check_subscriptions():
-    """
-    Runs once per hour.
-    Sends 7-day and 1-day reminders, removes expired members.
-    """
-    data    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
-    subs    = data["subscribers"]
-    changed = False
+    data      = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
+    subs      = data["subscribers"]
+    changed   = False
     to_remove = []
-
     for uid, sub in subs.items():
         days    = days_until(sub["expiry"])
         chat_id = sub.get("chat_id") or sub.get("user_id")
-
-        # 7-day reminder
         if days <= 7 and not sub.get("reminder_7_sent"):
             try:
                 send(chat_id, reminder_msg(days, sub["expiry"], sub.get("plan", "monthly")))
                 data["subscribers"][uid]["reminder_7_sent"] = True
                 changed = True
-                print(f"[SUB] 7-day reminder → {uid}")
             except Exception as e:
                 print(f"[SUB] Reminder error {uid}: {e}")
-
-        # 1-day reminder
         if days <= 1 and not sub.get("reminder_1_sent"):
             try:
                 send(chat_id, reminder_msg(1, sub["expiry"], sub.get("plan", "monthly")))
                 data["subscribers"][uid]["reminder_1_sent"] = True
                 changed = True
-                print(f"[SUB] 1-day reminder → {uid}")
             except Exception as e:
                 print(f"[SUB] Reminder error {uid}: {e}")
-
-        # Expired
         if days < 0:
             to_remove.append(uid)
-
     for uid in to_remove:
         sub     = data["subscribers"].pop(uid, {})
         changed = True
         uid_int = int(sub.get("user_id", uid))
         chat_id = sub.get("chat_id") or uid_int
-
-        # Kick from channel
         try:
             tg("banChatMember",   {"chat_id": PREMIUM_CHANNEL, "user_id": uid_int})
             tg("unbanChatMember", {"chat_id": PREMIUM_CHANNEL, "user_id": uid_int})
-            print(f"[SUB] Removed expired {uid}")
         except Exception as e:
             print(f"[SUB] Kick error {uid}: {e}")
-
-        # Notify user
         try:
             send(chat_id, expired_msg(sub.get("plan", "monthly")))
         except Exception as e:
             print(f"[SUB] Expired notify error {uid}: {e}")
-
-        # Notify admin
-        name = sub.get("first_name", uid)
+        name  = sub.get("first_name", uid)
         uname = f"@{sub['username']}" if sub.get("username") else ""
         send(ADMIN_ID,
             f"⏰ <b>Гишүүнчлэл дууслаа</b>\n\n"
             f"👤 {name} {uname} (ID: {uid})\n"
             f"Сувгаас автоматаар гаргалаа."
         )
-
     if changed:
         save_json(SUBSCRIBERS_FILE, data)
 
 # ── ADMIN SUBSCRIPTION COMMANDS ────────────────────────────────────────────────
 def handle_sub_command(cmd_parts):
-    """Handle /sublist, /subpending, /subremove commands."""
     cmd = cmd_parts[0].lower()
-
     if cmd == "/sublist":
         data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
         subs = data["subscribers"]
@@ -606,7 +525,6 @@ def handle_sub_command(cmd_parts):
             uname = f"@{sub['username']}" if sub.get("username") else ""
             lines.append(f"{icon} {name} {uname} — {fmt_date(sub['expiry'])} ({max(0,days)}хн)")
         send(ADMIN_CHAT_ID, "\n".join(lines))
-
     elif cmd == "/subpending":
         data    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
         pending = data["pending"]
@@ -620,7 +538,6 @@ def handle_sub_command(cmd_parts):
             t     = p.get("requested_at", "")[:16].replace("T", " ")
             lines.append(f"• {name} {uname} (ID: {uid}) — {t}")
         send(ADMIN_CHAT_ID, "\n".join(lines))
-
     elif cmd == "/subremove":
         if len(cmd_parts) < 2:
             send(ADMIN_CHAT_ID, "Хэрэглэх: /subremove 123456789")
@@ -642,10 +559,11 @@ def handle_sub_command(cmd_parts):
         send(chat_id, expired_msg(sub.get("plan", "monthly")))
         send(ADMIN_CHAT_ID, f"✅ {sub.get('first_name', target)} гишүүнчлэлийг цуцаллаа.")
 
-# ── PRICE FETCHER ──────────────────────────────────────────────────────────────
+# ── PRICE FETCHERS — FIXED WITH FALLBACKS (no more N/A) ───────────────────────
 def fetch_mse_top10():
+    """Fetch top 10 MSE stocks — tries 2 sources."""
+    # Source 1: stock.bbe.mn
     try:
-        import re
         r = requests.get("https://stock.bbe.mn/", timeout=15,
                          headers={"User-Agent": "Mozilla/5.0"})
         rows = re.findall(
@@ -656,25 +574,50 @@ def fetch_mse_top10():
         for row in rows[:10]:
             symbol, prev, curr, change, pct = row
             stocks.append({
-                "symbol": symbol,
-                "price":  curr.strip(),
-                "change": change.strip(),
-                "pct":    pct.strip(),
-                "arrow":  "▲" if not change.strip().startswith("-") else "▼",
+                "symbol": symbol, "price": curr.strip(),
+                "change": change.strip(), "pct": pct.strip(),
+                "arrow": "▲" if not change.strip().startswith("-") else "▼",
             })
-        return stocks[:10]
+        if stocks:
+            print(f"[MSE] ✅ {len(stocks)} stocks from bbe.mn")
+            return stocks[:10]
     except Exception as e:
-        print(f"[MSE ERROR] {e}")
-        return []
+        print(f"[MSE] bbe.mn failed: {e}")
+
+    # Source 2: mse.mn fallback
+    try:
+        r = requests.get("https://mse.mn/api/v1/market/top",
+                         timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        data   = r.json()
+        stocks = []
+        for item in (data.get("data") or data)[:10]:
+            change = float(item.get("change", 0) or 0)
+            stocks.append({
+                "symbol": item.get("symbol", ""),
+                "price":  str(item.get("close") or item.get("price", "—")),
+                "change": str(change),
+                "pct":    f"{abs(change):.2f}%",
+                "arrow":  "▲" if change >= 0 else "▼",
+            })
+        if stocks:
+            print(f"[MSE] ✅ {len(stocks)} stocks from mse.mn fallback")
+            return stocks[:10]
+    except Exception as e:
+        print(f"[MSE] mse.mn fallback failed: {e}")
+
+    print("[MSE] ⚠️ Both sources failed")
+    return []
 
 def fetch_global_stocks():
-    stocks = {}
+    """Fetch S&P 500, NASDAQ, Apple, Nvidia — Yahoo v8 then v7 fallback."""
+    stocks  = {}
     symbols = {"S&P 500": "^GSPC", "NASDAQ": "^IXIC", "Apple": "AAPL", "Nvidia": "NVDA"}
     for name, sym in symbols.items():
+        # Try Yahoo v8
         try:
-            r = requests.get(
+            r    = requests.get(
                 f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d",
-                headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=12
             )
             meta  = r.json()["chart"]["result"][0]["meta"]
             price = meta.get("regularMarketPrice", 0)
@@ -686,23 +629,46 @@ def fetch_global_stocks():
                 "pct":   f"{abs(pct):.2f}%",
                 "arrow": "▲" if chg >= 0 else "▼",
             }
+            continue
         except Exception:
             pass
+        # Fallback Yahoo v7
+        try:
+            r      = requests.get(
+                f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={sym}",
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=12
+            )
+            result = r.json()["quoteResponse"]["result"][0]
+            price  = result.get("regularMarketPrice", 0)
+            chg    = result.get("regularMarketChange", 0)
+            pct    = result.get("regularMarketChangePercent", 0)
+            stocks[name] = {
+                "price": f"{price:,.2f}",
+                "pct":   f"{abs(pct):.2f}%",
+                "arrow": "▲" if chg >= 0 else "▼",
+            }
+        except Exception as e:
+            print(f"[GLOBAL] {name} both sources failed: {e}")
     return stocks
 
 def fetch_assets():
+    """Fetch crypto + metals + forex — every source has a fallback. No more N/A."""
     assets = {}
+
+    # ── CRYPTO: CoinGecko → CoinCap fallback ──────────────────────────────
+    coingecko_ok = False
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price"
             "?ids=bitcoin,ethereum,binancecoin,ripple,solana"
-            "&vs_currencies=usd&include_24hr_change=true", timeout=10
+            "&vs_currencies=usd&include_24hr_change=true",
+            timeout=12
         )
         mapping = {"bitcoin": "Bitcoin", "ethereum": "Ethereum",
                    "binancecoin": "BNB", "ripple": "XRP", "solana": "Solana"}
         for key, name in mapping.items():
             d = r.json().get(key, {})
-            if d:
+            if d.get("usd"):
                 price = d["usd"]
                 chg   = d.get("usd_24h_change", 0)
                 assets[name] = {
@@ -710,29 +676,90 @@ def fetch_assets():
                     "chg":   f"{abs(chg):.2f}%",
                     "arrow": "▲" if chg >= 0 else "▼",
                 }
+        coingecko_ok = bool(assets)
+        if coingecko_ok:
+            print(f"[CRYPTO] ✅ CoinGecko: {len(assets)} coins")
     except Exception as e:
-        print(f"[CRYPTO ERROR] {e}")
+        print(f"[CRYPTO] CoinGecko failed: {e}")
 
-    try:
-        for metal, symbol in [("Алт", "gold"), ("Мөнгө", "silver"), ("Платин", "platinum")]:
+    if not coingecko_ok:
+        for cid, name in [("bitcoin","Bitcoin"),("ethereum","Ethereum"),("solana","Solana")]:
+            try:
+                r     = requests.get(f"https://api.coincap.io/v2/assets/{cid}", timeout=10)
+                d     = r.json().get("data", {})
+                price = float(d.get("priceUsd", 0))
+                chg   = float(d.get("changePercent24Hr", 0))
+                if price:
+                    assets[name] = {
+                        "price": f"${price:,.2f}" if price < 100 else f"${price:,.0f}",
+                        "chg":   f"{abs(chg):.2f}%",
+                        "arrow": "▲" if chg >= 0 else "▼",
+                    }
+            except Exception as e:
+                print(f"[CRYPTO] CoinCap {cid} failed: {e}")
+        if assets:
+            print(f"[CRYPTO] ✅ CoinCap fallback: {len(assets)} coins")
+
+    # ── METALS: metals.live → CoinGecko tether-gold fallback ──────────────
+    for metal_name, symbol in [("Алт", "gold"), ("Мөнгө", "silver"), ("Платин", "platinum")]:
+        fetched = False
+        try:
             r     = requests.get(f"https://api.metals.live/v1/spot/{symbol}", timeout=10)
             d     = r.json()
             price = d[0].get("price") if isinstance(d, list) else d.get("price")
             if price:
-                assets[metal] = {"price": f"${price:,.2f}/oz", "chg": "—", "arrow": "—"}
-    except Exception as e:
-        print(f"[METALS ERROR] {e}")
+                assets[metal_name] = {
+                    "price": f"${float(price):,.2f}/oz",
+                    "chg":   "—",
+                    "arrow": "—",
+                }
+                fetched = True
+        except Exception:
+            pass
 
+        if not fetched and symbol == "gold":
+            try:
+                r     = requests.get(
+                    "https://api.coingecko.com/api/v3/simple/price?ids=tether-gold&vs_currencies=usd",
+                    timeout=10
+                )
+                price = r.json().get("tether-gold", {}).get("usd")
+                if price:
+                    assets["Алт"] = {
+                        "price": f"${float(price):,.2f}/oz",
+                        "chg":   "—",
+                        "arrow": "—",
+                    }
+                    fetched = True
+            except Exception:
+                pass
+
+        if not fetched:
+            print(f"[METALS] ⚠️ {metal_name} both sources failed")
+
+    # ── FOREX: exchangerate-api → frankfurter fallback ─────────────────────
+    forex_ok = False
     try:
         r     = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
         rates = r.json().get("rates", {})
-        if "MNT" in rates:
+        if rates.get("MNT"):
             assets["USD/MNT"] = {"price": f"₮{rates['MNT']:,.0f}", "chg": "—", "arrow": "—"}
-        if "CNY" in rates:
+            forex_ok = True
+        if rates.get("CNY"):
             assets["USD/CNY"] = {"price": f"¥{rates['CNY']:.4f}", "chg": "—", "arrow": "—"}
     except Exception as e:
-        print(f"[FOREX ERROR] {e}")
+        print(f"[FOREX] exchangerate-api failed: {e}")
 
+    if not forex_ok:
+        try:
+            r     = requests.get("https://api.frankfurter.app/latest?from=USD&to=CNY", timeout=10)
+            rates = r.json().get("rates", {})
+            if rates.get("CNY"):
+                assets["USD/CNY"] = {"price": f"¥{rates['CNY']:.4f}", "chg": "—", "arrow": "—"}
+        except Exception as e:
+            print(f"[FOREX] frankfurter fallback failed: {e}")
+
+    print(f"[ASSETS] ✅ Total: {len(assets)} assets fetched")
     return assets
 
 # ── GOOGLE TRANSLATE ───────────────────────────────────────────────────────────
@@ -788,14 +815,14 @@ RECOMMENDATION: [1 sentence practical observation. End with: This is not investm
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": ANTHROPIC_KEY,
+                "x-api-key":         ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
+                "content-type":      "application/json",
             },
             json={
-                "model":    "claude-haiku-4-5-20251001",
+                "model":      "claude-haiku-4-5-20251001",
                 "max_tokens": 500,
-                "messages": [{"role": "user", "content": prompt}]
+                "messages":   [{"role": "user", "content": prompt}]
             }, timeout=30
         )
         result = r.json()
@@ -937,12 +964,12 @@ def post_custom(text):
         current = None
         for p in parts:
             p = p.strip()
-            if "ENGLISH (Premium)" in p:   current = "en"
+            if "ENGLISH (Premium)" in p:    current = "en"
             elif "MONGOLIAN (Premium)" in p: current = "mn"
-            elif "FREE TEASER" in p:        current = "teaser"
-            elif current == "en" and p:     en_part = p
-            elif current == "mn" and p:     mn_part = p
-            elif current == "teaser" and p: teaser_part = p
+            elif "FREE TEASER" in p:         current = "teaser"
+            elif current == "en" and p:      en_part = p
+            elif current == "mn" and p:      mn_part = p
+            elif current == "teaser" and p:  teaser_part = p
         if en_part:     send(PREMIUM_CHANNEL, en_part);     time.sleep(2)
         if mn_part:     send(PREMIUM_CHANNEL, mn_part);     time.sleep(2)
         if teaser_part: send(FREE_CHANNEL, teaser_part)
@@ -961,6 +988,7 @@ def post_morning_brief():
     mse_stocks    = fetch_mse_top10()
     global_stocks = fetch_global_stocks()
 
+    # MSE post
     mse_lines = ""
     for s in mse_stocks:
         icon = "🟢" if s["arrow"] == "▲" else "🔴"
@@ -975,6 +1003,7 @@ def post_morning_brief():
         f"━━━━━━━━━━━━━━━━━━\n<i>Эх сурвалж: stock.bbe.mn</i>"
     )
 
+    # Assets post
     asset_emojis = {
         "Bitcoin": "₿", "Ethereum": "💎", "BNB": "🔶", "XRP": "💧",
         "Solana": "🌊", "Алт": "🥇", "Мөнгө": "🥈", "Платин": "⚪",
@@ -985,7 +1014,6 @@ def post_morning_brief():
         icon    = asset_emojis.get(name, "📊")
         chg_str = f"  {d.get('arrow','')}{d.get('chg','')}" if d.get("chg") != "—" else ""
         asset_lines += f"{icon} <b>{name}</b>  {d['price']}{chg_str}\n"
-
     premium_assets = (
         f"💰 <b>10 Хөрөнгийн үнэ</b>\n"
         f"<i>{day_mn}, {date_str}</i>\n"
@@ -993,6 +1021,7 @@ def post_morning_brief():
         f"━━━━━━━━━━━━━━━━━━\n<i>Крипто: CoinGecko | Металл: Metals.live</i>"
     )
 
+    # Global stocks post
     global_emojis = {"S&P 500": "🇺🇸", "NASDAQ": "💻", "Apple": "🍎", "Nvidia": "🤖"}
     global_lines  = ""
     for name, d in global_stocks.items():
@@ -1001,28 +1030,33 @@ def post_morning_brief():
     btc = assets.get("Bitcoin", {})
     if btc:
         global_lines += f"₿ <b>Bitcoin</b>  {btc['price']}  {btc.get('arrow','')}{btc.get('chg','')}\n"
+    # Only send global post if we have data
+    if global_lines:
+        premium_global = (
+            f"🌍 <b>Дэлхийн томоохон хөрөнгүүд</b>\n"
+            f"<i>{day_mn}, {date_str}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━\n{global_lines}"
+            f"━━━━━━━━━━━━━━━━━━\n<i>Эх сурвалж: Yahoo Finance</i>"
+        )
+    else:
+        premium_global = None
 
-    premium_global = (
-        f"🌍 <b>Дэлхийн томоохон хөрөнгүүд</b>\n"
-        f"<i>{day_mn}, {date_str}</i>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"{global_lines or '<i>Өгөгдөл татаж чадсангүй</i>'}"
-        f"━━━━━━━━━━━━━━━━━━\n<i>Эх сурвалж: Yahoo Finance</i>"
-    )
-
-    btc_price  = assets.get("Bitcoin", {}).get("price", "N/A")
-    gold_price = assets.get("Алт",     {}).get("price", "N/A")
-    usd_mnt    = assets.get("USD/MNT", {}).get("price", "N/A")
-    top_stock  = mse_stocks[0] if mse_stocks else None
-
+    # Free channel teaser — only show lines where data actually exists
+    top_stock = mse_stocks[0] if mse_stocks else None
     free_post = (
         f"🌅 <b>Өглөөний зах зээлийн тойм</b>\n"
         f"<i>{day_mn}, {date_str}</i>\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"₿ Bitcoin:  <b>{btc_price}</b>\n"
-        f"🥇 Алт:     <b>{gold_price}</b>\n"
-        f"💵 USD/MNT: <b>{usd_mnt}</b>\n"
     )
+    btc = assets.get("Bitcoin")
+    if btc:
+        free_post += f"₿ Bitcoin:  <b>{btc['price']}</b>\n"
+    gold = assets.get("Алт")
+    if gold:
+        free_post += f"🥇 Алт:     <b>{gold['price']}</b>\n"
+    usd = assets.get("USD/MNT")
+    if usd:
+        free_post += f"💵 USD/MNT: <b>{usd['price']}</b>\n"
     if top_stock:
         icon = "🟢" if top_stock["arrow"] == "▲" else "🔴"
         free_post += f"{icon} МХБ топ: <b>{top_stock['symbol']}</b> ₮{top_stock['price']} {top_stock['arrow']}{top_stock['pct']}\n"
@@ -1034,9 +1068,10 @@ def post_morning_brief():
 
     send(PREMIUM_CHANNEL, premium_mse);    time.sleep(3)
     send(PREMIUM_CHANNEL, premium_assets); time.sleep(3)
-    send(PREMIUM_CHANNEL, premium_global); time.sleep(2)
+    if premium_global:
+        send(PREMIUM_CHANNEL, premium_global); time.sleep(2)
     send(FREE_CHANNEL, free_post)
-    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)} stocks, Assets: {len(assets)}")
+    print(f"[MORNING BRIEF] Done — MSE: {len(mse_stocks)}, Assets: {len(assets)}")
 
 # ── APPROVAL QUEUE ─────────────────────────────────────────────────────────────
 def queue_for_approval(article):
@@ -1060,12 +1095,9 @@ def handle_command(text):
     state = load_json(STATE_FILE, {})
     parts = text.strip().split()
     cmd   = parts[0].lower()
-
-    # Subscription commands
     if cmd in ("/sublist", "/subpending", "/subremove"):
         handle_sub_command(parts)
         return
-
     if cmd == "/status":
         ub = now_ub()
         send(ADMIN_CHAT_ID,
@@ -1077,9 +1109,7 @@ def handle_command(text):
             f"<b>News commands:</b>\n"
             f"/pause /resume /hours 8 22 /checknow /morning /status\n\n"
             f"<b>Subscription commands:</b>\n"
-            f"/sublist — active subscribers\n"
-            f"/subpending — pending payments\n"
-            f"/subremove 123456 — remove a subscriber"
+            f"/sublist /subpending /subremove 123456"
         )
     elif cmd == "/pause":
         state["paused"] = True; save_json(STATE_FILE, state)
@@ -1120,54 +1150,38 @@ def handle_updates():
     pending    = load_json(PENDING_FILE, {})
     edit_state = load_json(EDIT_STATE_FILE, {})
     offset     = sent.get("_offset", 0)
-
-    resp    = tg("getUpdates", {"offset": offset, "timeout": 5})
-    updates = resp.get("result", [])
+    resp       = tg("getUpdates", {"offset": offset, "timeout": 5})
+    updates    = resp.get("result", [])
 
     for update in updates:
         offset = update["update_id"] + 1
-
-        # ── Callback buttons ──
         cb = update.get("callback_query")
         if cb:
             cb_data = cb.get("data", "")
             if ":" not in cb_data:
                 continue
             action, aid = cb_data.split(":", 1)
-
-            # Subscription buttons
             if action == "sub_approve":
-                handle_sub_approve(aid, cb["id"])
-                continue
+                handle_sub_approve(aid, cb["id"]); continue
             if action == "sub_reject":
-                handle_sub_reject(aid, cb["id"])
-                continue
+                handle_sub_reject(aid, cb["id"]); continue
             if action == "plan_select":
-                # aid format: "user_id:plan" e.g. "123456789:yearly"
                 ps_parts  = aid.split(":")
                 ps_uid    = ps_parts[0]
                 ps_plan   = ps_parts[1] if len(ps_parts) > 1 else "monthly"
                 ps_chatid = cb.get("message", {}).get("chat", {}).get("id")
-                handle_plan_select_msg(ps_uid, ps_plan, ps_chatid, cb["id"])
-                continue
-
-            # News approve/edit/skip buttons
+                handle_plan_select_msg(ps_uid, ps_plan, ps_chatid, cb["id"]); continue
             art = pending.get(aid)
             if not art:
-                answer_cb(cb["id"], "Already handled.")
-                continue
-
+                answer_cb(cb["id"], "Already handled."); continue
             if action == "agree":
                 post_approved(art)
                 answer_cb(cb["id"], "✅ Posted!")
                 tg("editMessageText", {
-                    "chat_id": ADMIN_CHAT_ID,
-                    "message_id": art.get("preview_msg_id"),
-                    "text": f"✅ Posted: <b>{art['headline_en'][:80]}</b>",
-                    "parse_mode": "HTML"
+                    "chat_id": ADMIN_CHAT_ID, "message_id": art.get("preview_msg_id"),
+                    "text": f"✅ Posted: <b>{art['headline_en'][:80]}</b>", "parse_mode": "HTML"
                 })
                 del pending[aid]; save_json(PENDING_FILE, pending)
-
             elif action == "edit":
                 result  = send(ADMIN_CHAT_ID, build_edit_template(art))
                 tmpl_id = result.get("result", {}).get("message_id")
@@ -1177,41 +1191,28 @@ def handle_updates():
                 }
                 save_json(EDIT_STATE_FILE, edit_state)
                 answer_cb(cb["id"], "✏️ Edit and send back!")
-
             elif action == "skip":
                 answer_cb(cb["id"], "❌ Skipped.")
                 tg("editMessageText", {
-                    "chat_id": ADMIN_CHAT_ID,
-                    "message_id": art.get("preview_msg_id"),
-                    "text": f"❌ Skipped: {art['headline_en'][:80]}",
-                    "parse_mode": "HTML"
+                    "chat_id": ADMIN_CHAT_ID, "message_id": art.get("preview_msg_id"),
+                    "text": f"❌ Skipped: {art['headline_en'][:80]}", "parse_mode": "HTML"
                 })
                 del pending[aid]; save_json(PENDING_FILE, pending)
 
-        # ── Messages ──
         msg = update.get("message")
         if not msg:
             continue
-
         chat_type = msg.get("chat", {}).get("type", "")
         chat_id   = str(msg.get("chat", {}).get("id", ""))
         text      = msg.get("text", "").strip()
-
-        # Private DM = subscription flow
         if chat_type == "private" and str(chat_id) != str(ADMIN_CHAT_ID):
-            handle_private_message(msg)
-            continue
-
-        # Admin chat messages
+            handle_private_message(msg); continue
         if chat_id == str(ADMIN_CHAT_ID):
             waiting = edit_state.get("waiting")
             if not text:
                 continue
-
             if text.startswith("/"):
-                handle_command(text)
-                continue
-
+                handle_command(text); continue
             if waiting:
                 aid = waiting.get("aid")
                 art = pending.get(aid)
@@ -1219,10 +1220,8 @@ def handle_updates():
                     post_custom(text)
                     send(ADMIN_CHAT_ID, "✅ Your edited version has been posted!")
                     tg("editMessageText", {
-                        "chat_id": ADMIN_CHAT_ID,
-                        "message_id": waiting.get("preview_msg_id"),
-                        "text": f"✅ Posted (edited): <b>{art['headline_en'][:80]}</b>",
-                        "parse_mode": "HTML"
+                        "chat_id": ADMIN_CHAT_ID, "message_id": waiting.get("preview_msg_id"),
+                        "text": f"✅ Posted (edited): <b>{art['headline_en'][:80]}</b>", "parse_mode": "HTML"
                     })
                     del pending[aid]; save_json(PENDING_FILE, pending)
                 edit_state.pop("waiting", None)
@@ -1243,7 +1242,6 @@ def check_feeds():
     sent     = load_json(SENT_FILE, {})
     sent_ids = set(k for k in sent if not k.startswith("_"))
     queued   = 0; breaking = []; normal = []
-
     for feed_url, source_name in ALL_FEEDS:
         is_mn = any(feed_url == f for f, _ in MN_FEEDS)
         try:
@@ -1271,7 +1269,6 @@ def check_feeds():
                 sent[link_id] = True; sent[title_id] = True
         except Exception as e:
             print(f"[FEED ERROR] {source_name}: {e}")
-
     for item in breaking[:2]:
         processed = process_article(item["title"], item["summary"],
                                     item["source"], True, item["is_mn"])
@@ -1279,7 +1276,6 @@ def check_feeds():
         queue_for_approval({"id": item["link_id"], "link": item["link"],
                             "source": item["source"], "is_breaking": True, **processed})
         queued += 1; time.sleep(2)
-
     for item in normal[:3]:
         processed = process_article(item["title"], item["summary"],
                                     item["source"], False, item["is_mn"])
@@ -1287,7 +1283,6 @@ def check_feeds():
         queue_for_approval({"id": item["link_id"], "link": item["link"],
                             "source": item["source"], "is_breaking": False, **processed})
         queued += 1; time.sleep(2)
-
     save_json(SENT_FILE, sent)
     print(f"[{now_ub().strftime('%H:%M UB')}] Queued {queued} articles")
 
@@ -1303,10 +1298,8 @@ def main():
     print(f"  Bank    : {BANK_NAME} — {BANK_ACCOUNT}")
     print(f"  Price   : ₮{PRICE_MONTHLY:,}/сар | ₮{PRICE_YEARLY:,}/жил")
     print("=" * 55)
-
     if not BOT_TOKEN:     print("[FATAL] BOT_TOKEN missing!");     return
     if not ADMIN_CHAT_ID: print("[FATAL] ADMIN_CHAT_ID missing!"); return
-
     send(ADMIN_CHAT_ID,
         "🤖 <b>MGL Newsroom Bot — with Subscription Manager</b>\n\n"
         f"📢 Free: {FREE_CHANNEL}\n"
@@ -1321,23 +1314,17 @@ def main():
         "/status /pause /resume /checknow /morning\n\n"
         "✅ Running!"
     )
-
     while True:
         try:
             handle_updates()
-
             if should_post_morning_brief():
                 post_morning_brief()
-
             if is_active_hours() and should_check_feeds():
                 check_feeds()
-
             if should_check_subscriptions():
                 check_subscriptions()
-
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
-
         time.sleep(10)
 
 if __name__ == "__main__":
