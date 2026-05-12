@@ -30,7 +30,8 @@ from datetime import datetime, timezone, timedelta
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 FB_PAGE_ID      = os.environ.get("FB_PAGE_ID")
 FB_ACCESS_TOKEN = os.environ.get("FB_ACCESS_TOKEN")
-GEMINI_KEY      = os.environ.get("GEMINI_API_KEY")
+ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY")
+GOOGLE_TRANSLATE = os.environ.get("GOOGLE_TRANSLATE_KEY")
 BOT_TOKEN       = os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID")
 
@@ -352,35 +353,66 @@ def build_post_text(stocks, assets, index_val, market_cap, dividends={}):
 
     return "\n".join(lines)
 
-# ── GEMINI UPGRADE (optional — rewrites text more engagingly) ──────────────────
-def gemini_enhance(base_text, stocks, assets):
-    """Ask Gemini to write a better intro while keeping the data intact."""
-    if not GEMINI_KEY or not stocks:
+# ── GOOGLE TRANSLATE ──────────────────────────────────────────────────────────
+def translate(text):
+    if not GOOGLE_TRANSLATE or not text:
+        return text
+    try:
+        r = requests.post(
+            "https://translation.googleapis.com/language/translate/v2",
+            params={"key": GOOGLE_TRANSLATE},
+            json={"q": text, "target": "mn", "format": "text"}, timeout=10
+        )
+        result = r.json()
+        if "error" in result:
+            return text
+        return result["data"]["translations"][0]["translatedText"]
+    except Exception:
+        return text
+
+# ── CLAUDE — write English intro, Gemini translates ───────────────────────────
+def claude_enhance(base_text, stocks, assets):
+    """Claude writes engaging English intro → Gemini translates to Mongolian."""
+    if not ANTHROPIC_KEY or not stocks:
         return base_text
     try:
-        top = stocks[0]
+        top  = stocks[0]
+        date = now_ub().strftime("%Y.%m.%d")
         prompt = (
-            f"Та МХБ-ийн өдөр тутмын мэдээг Facebook-т нийтлэх мэргэжлийн редактор.\n\n"
-            f"Энэхүү постын эхний 2 өгүүлбэрийг илүү сонирхолтой болгон бич. "
-            f"Зөвхөн эхний 2 өгүүлбэрийг л өөрчил, бусад бүх дата яг адилхан үлдэнэ.\n\n"
-            f"Өнөөдрийн хамгийн идэвхтэй хувьцаа: {top['symbol']} "
-            f"₮{top['price']} ({top['arrow']}{top['pct']})\n\n"
-            f"Одоогийн эхлэл:\n"
-            f"МХБ-ийн арилжааны тойм | {now_ub().strftime('%Y.%m.%d')}\n\n"
-            f"Шинэ сонирхолтой эхлэл (2 өгүүлбэр, emoji ашигла, Монгол хэлээр):"
+            f"Write exactly 2 engaging sentences for a Mongolian stock market "
+            f"Facebook page intro for today's ({date}) МХБ daily summary.\n"
+            f"Top stock: {top['symbol']} at ₮{top['price']} ({top['arrow']}{top['pct']})\n\n"
+            f"Rules:\n"
+            f"- Write in English\n"
+            f"- Use 1-2 emojis\n"
+            f"- Sound professional but exciting\n"
+            f"- No hashtags\n"
+            f"- 2 sentences only\n\n"
+            f"Output the 2 sentences only."
         )
         r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json={
+                "model":      "claude-haiku-4-5-20251001",
+                "max_tokens": 150,
+                "messages":   [{"role": "user", "content": prompt}]
+            }, timeout=20
         )
-        intro = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # Replace just the first line with Gemini's better intro
+        intro_en = r.json()["content"][0]["text"].strip()
+
+        # Google Translate → Mongolian
+        intro_mn = translate(intro_en)
+
         lines    = base_text.split("\n")
-        new_text = intro + "\n\n" + "\n".join(lines[1:])
+        new_text = intro_mn + "\n\n" + "\n".join(lines[1:])
         return new_text
     except Exception as e:
-        print(f"[GEMINI] {e}")
+        print(f"[CLAUDE FB] {e}")
         return base_text
 
 # ── IMAGE GENERATOR ────────────────────────────────────────────────────────────
@@ -601,7 +633,7 @@ def run_daily_fb_post():
     print(f"[FB] Image: {'✅' if image_bytes else '❌'}")
 
     post_text = build_post_text(stocks, assets, index_val, market_cap, dividends)
-    post_text = gemini_enhance(post_text, stocks, assets)
+    post_text = claude_enhance(post_text, stocks, assets)
 
     send_for_approval(image_bytes, post_text, stocks)
 
@@ -620,7 +652,8 @@ def main():
     print("MGL Newsroom — Facebook Auto Poster")
     print(f"  FB Page : {FB_PAGE_ID or '❌ MISSING'}")
     print(f"  Token   : {'✅' if FB_ACCESS_TOKEN else '❌ MISSING'}")
-    print(f"  Gemini  : {'✅' if GEMINI_KEY     else '⚠️  no Gemini (basic text)'}")
+    print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ MISSING'}")
+    print(f"  Google  : {'✅' if GOOGLE_TRANSLATE else '❌ MISSING'}")
     print(f"  Bot     : {'✅' if BOT_TOKEN      else '❌ MISSING'}")
     print("=" * 50)
     print("Posts at 15:30 UB daily after MSE closes.\n")
