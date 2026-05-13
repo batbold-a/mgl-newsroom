@@ -804,12 +804,14 @@ Summary: {summary[:400]}
 Source: {source}
 Today's editorial focus: {day_context}
 
-Write in EXACTLY this format:
+Write in EXACTLY this format — plain text only, NO HTML tags:
 
 HEADLINE: [Clear punchy headline, max 12 words]
 SUMMARY: [2-3 sentences. What happened, why it matters.]
 MONGOLIA_IMPACT: [1-2 sentences. Specific impact on Mongolian investors.]
-RECOMMENDATION: [1 sentence practical observation. End with: This is not investment advice.]"""
+RECOMMENDATION: [1 sentence practical observation. End with: This is not investment advice.]
+
+IMPORTANT: Never use HTML tags like <div>, <p>, <br>, <b>, <i> or any other tags. Plain text only."""
 
     try:
         r = requests.post(
@@ -834,6 +836,11 @@ RECOMMENDATION: [1 sentence practical observation. End with: This is not investm
         print(f"[CLAUDE ERROR] {e}")
         return None
 
+def strip_html(text):
+    """Remove any HTML tags Claude accidentally includes."""
+    import re
+    return re.sub(r'<[^>]+>', '', text or '').strip()
+
 def parse_claude(text):
     headline = summary = impact = recommendation = ""
     current = None
@@ -851,7 +858,7 @@ def parse_claude(text):
             if current == "s": summary += " " + line
             elif current == "i": impact += " " + line
             elif current == "r": recommendation += " " + line
-    return headline.strip(), summary.strip(), impact.strip(), recommendation.strip()
+    return strip_html(headline), strip_html(summary), strip_html(impact), strip_html(recommendation)
 
 def process_article(title, summary, source, is_breaking, is_mn_source=False):
     _, _, _, day_context = SCHEDULE.get(now_ub().weekday(),
