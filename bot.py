@@ -30,6 +30,7 @@ import re
 import time
 import json
 import os
+import io
 import hashlib
 from datetime import datetime, timezone, timedelta
 
@@ -123,6 +124,8 @@ PENDING_FILE     = "pending_articles.json"
 EDIT_STATE_FILE  = "edit_state.json"
 STATE_FILE       = "bot_state.json"
 SUBSCRIBERS_FILE = "subscribers.json"
+WATCHLIST_FILE   = "watchlists.json"      # NEW — personal watchlists
+PRICES_FILE      = "prev_prices.json"     # NEW — previous day prices for comparison
 
 # ── HELPERS ────────────────────────────────────────────────────────────────────
 def load_json(path, default):
@@ -308,6 +311,12 @@ def handle_private_message(msg):
     photo   = msg.get("photo")
     if not user_id or not chat_id:
         return
+
+    # Watchlist commands — handle first
+    if text and text.lower().startswith(("/watch", "/unwatch")):
+        handle_watchlist_command(msg)
+        return
+
     data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
     if text and not photo:
         if user_id in data["subscribers"]:
@@ -957,27 +966,24 @@ def build_edit_template(a):
 
 # ── POST HELPERS ───────────────────────────────────────────────────────────────
 def post_approved(a):
-    en, mn = build_premium_post(a)
-    teaser = build_free_teaser(a)
-    send(PREMIUM_CHANNEL, en);   time.sleep(2)
+    _, mn   = build_premium_post(a)
+    teaser  = build_free_teaser(a)
     send(PREMIUM_CHANNEL, mn);   time.sleep(2)
     send(FREE_CHANNEL, teaser)
-    print(f"[POSTED] {a['headline_en'][:60]}")
+    print(f"[POSTED] {a['headline_mn'][:60]}")
 
 def post_custom(text):
     if "══ MONGOLIAN (Premium) ══" in text:
         parts = text.split("══")
-        en_part = mn_part = teaser_part = ""
+        mn_part = teaser_part = ""
         current = None
         for p in parts:
             p = p.strip()
             if "ENGLISH (Premium)" in p:    current = "en"
             elif "MONGOLIAN (Premium)" in p: current = "mn"
             elif "FREE TEASER" in p:         current = "teaser"
-            elif current == "en" and p:      en_part = p
             elif current == "mn" and p:      mn_part = p
             elif current == "teaser" and p:  teaser_part = p
-        if en_part:     send(PREMIUM_CHANNEL, en_part);     time.sleep(2)
         if mn_part:     send(PREMIUM_CHANNEL, mn_part);     time.sleep(2)
         if teaser_part: send(FREE_CHANNEL, teaser_part)
     else:
@@ -1144,10 +1150,18 @@ def handle_command(text):
     elif cmd == "/morning":
         send(ADMIN_CHAT_ID, "🌅 Posting morning brief now...")
         post_morning_brief()
+    elif cmd == "/weekly":
+        send(ADMIN_CHAT_ID, "📊 Posting weekly outlook now...")
+        post_weekly_outlook()
+    elif cmd == "/chart":
+        send(ADMIN_CHAT_ID, "📈 Sending chart to premium channel...")
+        stocks = fetch_mse_top10()
+        send_chart_to_premium(stocks)
     else:
         send(ADMIN_CHAT_ID,
             f"❓ Unknown: {cmd}\n\n"
             "/status /pause /resume /hours /checknow /morning\n"
+            "/weekly /chart\n"
             "/sublist /subpending /subremove"
         )
 
@@ -1293,6 +1307,499 @@ def check_feeds():
     save_json(SENT_FILE, sent)
     print(f"[{now_ub().strftime('%H:%M UB')}] Queued {queued} articles")
 
+# ── WATCHLIST — Personal stock & forex alerts ─────────────────────────────────
+VALID_FOREX = {"USD/MNT", "EUR/MNT", "CNY/MNT", "USD/CNY", "EUR/USD"}
+MAX_WATCH   = 5
+ALERT_PCT   = 2.0  # alert if moves 2%+
+
+def get_subscribers_set():
+    """Return set of all active premium subscriber user IDs."""
+    data = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
+    return set(str(s["user_id"]) for s in data["subscribers"].values())
+
+def handle_watchlist_command(msg):
+    """Handle /watch and /unwatch commands from premium users."""
+    user_id  = str(msg.get("from", {}).get("id", ""))
+    chat_id  = msg.get("chat", {}).get("id")
+    text     = msg.get("text", "").strip()
+    parts    = text.split()
+    cmd      = parts[0].lower()
+
+    # Check premium
+    if user_id not in get_subscribers_set():
+        send(chat_id,
+            "🔒 <b>Watchlist нь Premium гишүүдэд зориулагдсан!</b>\n\n"
+            f"Premium болох: {PREMIUM_INVITE}"
+        )
+        return
+
+    watches = load_json(WATCHLIST_FILE, {})
+    current = watches.get(user_id, [])
+
+    if cmd == "/watch":
+        if len(parts) == 1:
+            # Show current watchlist
+            if not current:
+                send(chat_id,
+                    "📋 Таны watchlist хоосон байна.\n\n"
+                    "Нэмэхийн тулд:\n"
+                    "<code>/watch KHAN APU GLMT</code>\n"
+                    "<code>/watch USD/MNT EUR/MNT</code>"
+                )
+            else:
+                send(chat_id,
+                    f"📋 <b>Таны watchlist:</b>\n\n"
+                    + "\n".join(f"• {s}" for s in current) +
+                    f"\n\nМакс {MAX_WATCH} хувьцаа/валют.\n"
+                    f"Устгахын тулд: <code>/unwatch KHAN</code>\n"
+                    f"Бүгдийг устгах: <code>/unwatch all</code>"
+                )
+            return
+
+        # Add stocks
+        new_items = [p.upper() for p in parts[1:]]
+        added = []
+        skipped = []
+        for item in new_items:
+            if item in current:
+                skipped.append(f"{item} (аль хэдийн байна)")
+            elif len(current) >= MAX_WATCH:
+                skipped.append(f"{item} (лимит {MAX_WATCH})")
+            else:
+                current.append(item)
+                added.append(item)
+
+        watches[user_id] = current
+        save_json(WATCHLIST_FILE, watches)
+
+        msg_text = ""
+        if added:
+            msg_text += f"✅ Нэмэгдлээ: <b>{', '.join(added)}</b>\n"
+        if skipped:
+            msg_text += f"⚠️ Алгасагдлаа: {', '.join(skipped)}\n"
+        msg_text += f"\n📋 Одоогийн watchlist ({len(current)}/{MAX_WATCH}):\n"
+        msg_text += "\n".join(f"• {s}" for s in current)
+        msg_text += f"\n\n📈 {ALERT_PCT}%-иас дээш хөдөлгөөн ажиглагдвал мэдэгдэнэ."
+        send(chat_id, msg_text)
+
+    elif cmd == "/unwatch":
+        if len(parts) == 1:
+            send(chat_id, "Хэрэглэх: <code>/unwatch KHAN</code> эсвэл <code>/unwatch all</code>")
+            return
+        target = parts[1].upper()
+        if target == "ALL":
+            watches[user_id] = []
+            save_json(WATCHLIST_FILE, watches)
+            send(chat_id, "🗑 Watchlist цэвэрлэгдлээ.")
+        elif target in current:
+            current.remove(target)
+            watches[user_id] = current
+            save_json(WATCHLIST_FILE, watches)
+            send(chat_id, f"✅ <b>{target}</b> watchlist-аас хасагдлаа.")
+        else:
+            send(chat_id, f"❌ <b>{target}</b> таны watchlist-д байхгүй байна.")
+
+def fetch_current_prices():
+    """Fetch current prices for all watched items."""
+    watches   = load_json(WATCHLIST_FILE, {})
+    all_items = set()
+    for items in watches.values():
+        all_items.update(items)
+
+    if not all_items:
+        return {}
+
+    prices = {}
+
+    # MSE stocks
+    mse_stocks = fetch_mse_top10()
+    for s in mse_stocks:
+        prices[s["symbol"]] = {
+            "price": s["price"],
+            "pct":   s["pct"],
+            "arrow": s["arrow"],
+            "change": s["change"],
+        }
+
+    # Forex
+    try:
+        r     = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+        rates = r.json().get("rates", {})
+        base_pairs = {
+            "USD/MNT": ("USD", "MNT", "₮"),
+            "CNY/MNT": ("CNY", "MNT", "₮"),
+            "EUR/MNT": ("EUR", "MNT", "₮"),
+            "USD/CNY": ("USD", "CNY", "¥"),
+            "EUR/USD": ("EUR", "USD", "$"),
+        }
+        for pair, (base, quote, symbol) in base_pairs.items():
+            if pair in all_items and quote in rates and base in rates:
+                if base == "USD":
+                    rate = rates[quote]
+                else:
+                    rate = rates[quote] / rates[base]
+                prices[pair] = {
+                    "price":  f"{symbol}{rate:,.2f}",
+                    "pct":    "—",
+                    "arrow":  "—",
+                    "change": "—",
+                }
+    except Exception as e:
+        print(f"[WATCHLIST FOREX] {e}")
+
+    return prices
+
+def check_watchlist_alerts():
+    """Check all watchlists and send alerts for 2%+ moves."""
+    watches   = load_json(WATCHLIST_FILE, {})
+    prev      = load_json(PRICES_FILE, {})
+    if not watches:
+        return
+
+    current = fetch_current_prices()
+    if not current:
+        return
+
+    ub = now_ub()
+
+    for user_id, items in watches.items():
+        if not items:
+            continue
+
+        # Get user chat_id from subscribers
+        subs    = load_json(SUBSCRIBERS_FILE, {"subscribers": {}, "pending": {}})
+        sub     = subs["subscribers"].get(user_id, {})
+        chat_id = sub.get("chat_id") or sub.get("user_id")
+        if not chat_id:
+            continue
+
+        for item in items:
+            curr_data = current.get(item)
+            if not curr_data:
+                continue
+
+            pct_str = curr_data.get("pct", "—")
+
+            # Parse percentage
+            try:
+                pct_val = float(pct_str.replace("%", "").replace("+", "").strip())
+            except Exception:
+                continue
+
+            if abs(pct_val) < ALERT_PCT:
+                continue
+
+            # Build alert
+            arrow  = curr_data.get("arrow", "—")
+            is_up  = arrow == "▲"
+            emoji  = "📈" if is_up else "📉"
+            sign   = "+" if is_up else ""
+
+            # Get AI comment
+            ai_comment = ""
+            if ANTHROPIC_KEY:
+                try:
+                    prompt = (
+                        f"Write 2 sentences in Mongolian explaining why {item} "
+                        f"moved {sign}{pct_val:.2f}% today on the Mongolian Stock Exchange. "
+                        f"Be specific about what this means for investors. "
+                        f"End with: Хөрөнгө оруулалтын зөвлөгөө биш."
+                    )
+                    r = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key":         ANTHROPIC_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "content-type":      "application/json",
+                        },
+                        json={
+                            "model":      "claude-haiku-4-5-20251001",
+                            "max_tokens": 150,
+                            "messages":   [{"role": "user", "content": prompt}]
+                        }, timeout=15
+                    )
+                    ai_comment = r.json()["content"][0]["text"].strip()
+                    # Translate to Mongolian
+                    ai_comment = translate(ai_comment)
+                except Exception:
+                    pass
+
+            alert = (
+                f"{emoji} <b>Таны watchlist — {item}</b>\n"
+                f"<b>Хөдөлгөөн ажиглагдлаа!</b>\n\n"
+                f"💹 Өнөөдрийн ханш: <b>{curr_data['price']}</b>\n"
+                f"📊 Өөрчлөлт: <b>{sign}{pct_val:.2f}%</b>\n"
+                f"🕐 {ub.strftime('%H:%M, %Y.%m.%d')}\n"
+            )
+            if ai_comment:
+                alert += f"\n💡 <i>{ai_comment}</i>\n"
+            alert += f"\n⚠️ Хөрөнгө оруулалтын зөвлөгөө биш."
+
+            try:
+                send(chat_id, alert)
+                print(f"[WATCHLIST] Alert sent: {item} {sign}{pct_val:.2f}% → user {user_id}")
+                time.sleep(1)
+            except Exception as e:
+                print(f"[WATCHLIST] Alert error {user_id}: {e}")
+
+    # Save current prices for next comparison
+    save_json(PRICES_FILE, current)
+    print(f"[WATCHLIST] Check done — {len(current)} prices saved")
+
+def should_check_watchlists():
+    """Check watchlists once at 15:30 UB."""
+    ub    = now_ub()
+    state = load_json(STATE_FILE, {})
+    today = ub.strftime("%Y-%m-%d")
+    key   = f"watchlist_{today}"
+    if ub.hour == 15 and ub.minute >= 30 and not state.get(key):
+        state[key] = True
+        save_json(STATE_FILE, state)
+        return True
+    return False
+
+# ── WEEKLY OUTLOOK ─────────────────────────────────────────────────────────────
+def should_post_weekly_outlook():
+    """Post weekly outlook Friday 4pm or Monday 8am UB."""
+    ub    = now_ub()
+    state = load_json(STATE_FILE, {})
+    today = ub.strftime("%Y-%m-%d")
+    key   = f"weekly_outlook_{today}"
+    if state.get(key):
+        return False
+    # Friday 4pm
+    if ub.weekday() == 4 and ub.hour == 16 and ub.minute < 10:
+        state[key] = True
+        save_json(STATE_FILE, state)
+        return True
+    # Monday 8am fallback
+    if ub.weekday() == 0 and ub.hour == 8 and ub.minute < 10:
+        state[key] = True
+        save_json(STATE_FILE, state)
+        return True
+    return False
+
+def post_weekly_outlook():
+    """Generate and post weekly market outlook."""
+    print("[WEEKLY] Generating outlook...")
+    ub        = now_ub()
+    date_str  = ub.strftime("%Y.%m.%d")
+    day_names = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
+    day_mn    = day_names[ub.weekday()]
+
+    stocks = fetch_mse_top10()
+    assets = fetch_assets()
+
+    # Build stock summary for Claude
+    stock_summary = ""
+    for s in stocks[:10]:
+        stock_summary += f"{s['symbol']}: ₮{s['price']} {s['arrow']}{s['pct']}\n"
+
+    btc = assets.get("Bitcoin", {}).get("price", "N/A")
+    gold = assets.get("Алт", {}).get("price", "N/A")
+    usd = assets.get("USD/MNT", {}).get("price", "N/A")
+
+    # Claude writes full analysis in English
+    full_en = ""
+    brief_en = ""
+    if ANTHROPIC_KEY:
+        try:
+            prompt = (
+                f"You are a financial analyst writing a weekly market outlook for Mongolian investors.\n\n"
+                f"Date: {date_str}\n"
+                f"MSE Top stocks this week:\n{stock_summary}\n"
+                f"Bitcoin: {btc} | Gold: {gold} | USD/MNT: {usd}\n\n"
+                f"Write TWO versions:\n\n"
+                f"FULL: (for premium subscribers — 4-5 paragraphs)\n"
+                f"- Week recap: what moved and why\n"
+                f"- Top performers and losers analysis\n"
+                f"- Global factors affecting MSE\n"
+                f"- What to watch next week\n"
+                f"- Key risks and opportunities\n"
+                f"- End with: This is not investment advice.\n\n"
+                f"BRIEF: (for free channel — 3-4 sentences only)\n"
+                f"- Quick summary of the week\n"
+                f"- One thing to watch next week\n"
+                f"- End with: Full analysis in Premium channel.\n\n"
+                f"Plain text only. No HTML tags."
+            )
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key":         ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type":      "application/json",
+                },
+                json={
+                    "model":      "claude-haiku-4-5-20251001",
+                    "max_tokens": 1000,
+                    "messages":   [{"role": "user", "content": prompt}]
+                }, timeout=30
+            )
+            raw = r.json()["content"][0]["text"].strip()
+
+            # Split full and brief
+            if "BRIEF:" in raw:
+                parts    = raw.split("BRIEF:")
+                full_en  = parts[0].replace("FULL:", "").strip()
+                brief_en = parts[1].strip()
+            else:
+                full_en  = raw
+                brief_en = raw[:300]
+
+        except Exception as e:
+            print(f"[WEEKLY CLAUDE] {e}")
+
+    # Translate both
+    full_mn  = translate(full_en)  if full_en  else ""
+    brief_mn = translate(brief_en) if brief_en else ""
+
+    # Build top stocks section
+    mse_lines = ""
+    for s in stocks[:10]:
+        icon = "🟢" if s["arrow"] == "▲" else "🔴"
+        mse_lines += f"{icon} <b>{s['symbol']}</b>  ₮{s['price']}  {s['arrow']}{s['pct']}\n"
+
+    # ── PREMIUM POST ──
+    premium_post = (
+        f"📊 <b>7 Хоногийн зах зээлийн тойм</b>\n"
+        f"<i>{day_mn}, {date_str}</i>\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🇲🇳 <b>МХБ — Энэ 7 хоногийн байдал</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{mse_lines}\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"📝 <b>Шинжилгээ:</b>\n\n"
+        f"{full_mn if full_mn else 'Шинжилгээ боломжгүй.'}\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"₿ Bitcoin: {btc} | 🥇 Алт: {gold} | 💵 {usd}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Эх сурвалж: mse.mn | MGL Newsroom</i>"
+        f"{DISCLAIMER}"
+    )
+
+    # ── FREE POST ──
+    free_post = (
+        f"📊 <b>7 Хоногийн зах зээлийн товч тойм</b>\n"
+        f"<i>{day_mn}, {date_str}</i>\n\n"
+        f"{brief_mn if brief_mn else 'Энэ 7 хоногийн зах зээлийн мэдээллийг Premium сувгаас аваарай.'}\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📈 Дэлгэрэнгүй шинжилгээ Premium сувгаас!\n"
+        f"➡️ <b>Нэгдэх: {PREMIUM_INVITE}</b>"
+    )
+
+    send(PREMIUM_CHANNEL, premium_post)
+    time.sleep(3)
+    send(FREE_CHANNEL, free_post)
+    print(f"[WEEKLY] Done — posted to both channels")
+
+# ── STOCK CHART GENERATOR ──────────────────────────────────────────────────────
+def generate_stock_chart(stocks):
+    """Generate a simple bar chart showing top movers."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return None
+
+    W, H = 800, 400
+    img  = Image.new("RGB", (W, H), color=(8, 15, 40))
+    draw = ImageDraw.Draw(img)
+
+    # Background
+    for i in range(H):
+        ratio = i / H
+        draw.line([(0, i), (W, i)],
+                  fill=(int(8+ratio*10), int(15+ratio*8), int(40+ratio*15)))
+
+    try:
+        fp      = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
+        f_title = ImageFont.truetype(fp, 22)
+        f_label = ImageFont.truetype(fp, 16)
+        f_small = ImageFont.truetype(fp, 13)
+    except Exception:
+        f_title = f_label = f_small = ImageFont.load_default()
+
+    ub       = now_ub()
+    date_str = ub.strftime("%Y.%m.%d")
+
+    draw.text((20, 12), f"MSE Top Movers | {date_str}", font=f_title, fill=(0, 220, 120))
+    draw.line([(20, 42), (W-20, 42)], fill=(0, 180, 100), width=1)
+
+    # Sort by absolute % change
+    def parse_pct(s):
+        try:
+            return abs(float(s.get("pct","0").replace("%","").strip()))
+        except Exception:
+            return 0
+
+    top_movers = sorted(stocks, key=parse_pct, reverse=True)[:8]
+
+    # Bar chart
+    bar_area_top    = 55
+    bar_area_bottom = H - 50
+    bar_area_h      = bar_area_bottom - bar_area_top
+    bar_w           = (W - 60) // len(top_movers) - 8
+    max_pct         = max(parse_pct(s) for s in top_movers) or 1
+
+    for i, s in enumerate(top_movers):
+        pct_val = parse_pct(s)
+        is_up   = s["arrow"] == "▲"
+        color   = (0, 200, 100) if is_up else (220, 60, 60)
+        bar_h   = int((pct_val / max_pct) * (bar_area_h * 0.75))
+        x       = 30 + i * (bar_w + 8)
+        y_top   = bar_area_bottom - bar_h
+        y_bot   = bar_area_bottom
+
+        draw.rectangle([x, y_top, x+bar_w, y_bot], fill=color)
+        draw.text((x, y_top - 20), f"{'+' if is_up else '-'}{pct_val:.1f}%",
+                  font=f_small, fill=color)
+        draw.text((x, bar_area_bottom + 5), s["symbol"],
+                  font=f_label, fill=(200, 220, 255))
+
+    # Bottom bar
+    draw.rectangle([0, H-28, W, H], fill=(0, 130, 70))
+    draw.text((15, H-20), "MGL NEWSROOM  |  t.me/mglnewsroomfree",
+              font=f_small, fill=(255, 255, 200))
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    buf.seek(0)
+    return buf.read()
+
+def send_chart_to_premium(stocks):
+    """Send stock chart image to premium channel."""
+    chart = generate_stock_chart(stocks)
+    if not chart:
+        return
+    try:
+        ub      = now_ub()
+        caption = (
+            f"📊 <b>Өнөөдрийн хамгийн идэвхтэй хувьцаанууд</b>\n"
+            f"<i>{ub.strftime('%Y.%m.%d')}</i>"
+            f"{DISCLAIMER}"
+        )
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            data={"chat_id": PREMIUM_CHANNEL, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": ("chart.jpg", chart, "image/jpeg")},
+            timeout=20
+        )
+        print("[CHART] Sent to premium channel")
+    except Exception as e:
+        print(f"[CHART] Error: {e}")
+
+def should_send_chart():
+    """Send chart once daily at 15:35 UB (after MSE closes)."""
+    ub    = now_ub()
+    state = load_json(STATE_FILE, {})
+    today = ub.strftime("%Y-%m-%d")
+    key   = f"chart_{today}"
+    if ub.hour == 15 and ub.minute >= 35 and not state.get(key):
+        state[key] = True
+        save_json(STATE_FILE, state)
+        return True
+    return False
+
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 55)
@@ -1330,6 +1837,13 @@ def main():
                 check_feeds()
             if should_check_subscriptions():
                 check_subscriptions()
+            if should_check_watchlists():
+                check_watchlist_alerts()
+            if should_send_chart():
+                stocks = fetch_mse_top10()
+                send_chart_to_premium(stocks)
+            if should_post_weekly_outlook():
+                post_weekly_outlook()
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
         time.sleep(10)
