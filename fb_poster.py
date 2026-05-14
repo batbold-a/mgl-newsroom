@@ -417,8 +417,10 @@ def claude_enhance(base_text, stocks, assets):
 
 # ── IMAGE GENERATOR ────────────────────────────────────────────────────────────
 def generate_image(stocks, assets, index_val):
+    """Generate professional dark blue thumbnail as HTML rendered to image."""
     try:
         from PIL import Image, ImageDraw, ImageFont
+        import io as _io
     except ImportError:
         print("[IMAGE] Run: pip install pillow")
         return None
@@ -430,81 +432,105 @@ def generate_image(stocks, assets, index_val):
     img  = Image.new("RGB", (W, H), color=(8, 15, 40))
     draw = ImageDraw.Draw(img)
 
+    # Gradient background
     for i in range(H):
         ratio = i / H
         draw.line([(0, i), (W, i)],
                   fill=(int(8+ratio*12), int(15+ratio*10), int(40+ratio*20)))
 
-    draw.rectangle([0, 0, 6, H],        fill=(0, 200, 100))
+    # Accent bars
+    draw.rectangle([0, 0, 6, H],         fill=(0, 200, 100))
     draw.rectangle([580, 40, 583, H-40], fill=(0, 180, 90))
 
-    try:
-        fp      = "/usr/share/fonts/truetype/dejavu/DejaVuSans"
-        f_title  = ImageFont.truetype(f"{fp}-Bold.ttf", 38)
-        f_large  = ImageFont.truetype(f"{fp}-Bold.ttf", 28)
-        f_medium = ImageFont.truetype(f"{fp}.ttf", 22)
-        f_small  = ImageFont.truetype(f"{fp}.ttf", 18)
-        f_tiny   = ImageFont.truetype(f"{fp}.ttf", 14)
-    except Exception:
-        f_title = f_large = f_medium = f_small = f_tiny = ImageFont.load_default()
+    # Find best available font with Mongolian support
+    font_paths = [
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansMongolian-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    font_bold_paths = [
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
 
-    # ── LEFT: MSE stocks ──
-    draw.text((30, 22),  "МХБ",                       font=f_title,  fill=(0, 220, 120))
-    draw.text((30, 68),  "MONGOLIAN STOCK EXCHANGE",   font=f_tiny,   fill=(140, 170, 210))
+    def load_font(size, bold=False):
+        paths = font_bold_paths if bold else font_paths
+        for p in paths:
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    f_title  = load_font(38, bold=True)
+    f_large  = load_font(28, bold=True)
+    f_medium = load_font(22)
+    f_small  = load_font(18)
+    f_tiny   = load_font(14)
+
+    # ── LEFT: MSE stocks — use ASCII only for symbol, English for labels ──
+    draw.text((30, 22),  "MXB",                        font=f_title,  fill=(0, 220, 120))
+    draw.text((125, 30), "Mongolian Stock Exchange",    font=f_tiny,   fill=(0, 220, 120))
+    draw.text((30, 68),  "MONGOLIAN STOCK EXCHANGE",    font=f_tiny,   fill=(140, 170, 210))
     if index_val:
-        draw.text((30, 90), f"TOP-20: {index_val}",   font=f_small,  fill=(0, 220, 120))
-    draw.text((30, 112), f"Арилжааны тойм | {date_str}", font=f_small, fill=(170, 195, 235))
-    draw.line([(30, 138), (555, 138)], fill=(0, 180, 100), width=2)
+        draw.text((30, 88),  f"TOP-20 Index: {index_val}", font=f_small, fill=(0, 220, 120))
+    draw.text((30, 110), f"Daily Summary | {date_str}",   font=f_small, fill=(170, 195, 235))
+    draw.line([(30, 135), (555, 135)], fill=(0, 180, 100), width=2)
 
-    y = 150
+    y = 147
     for s in stocks[:8]:
         is_up  = s["arrow"] == "▲"
         color  = (0, 220, 120) if is_up else (255, 75, 75)
         bg     = (0, 38, 18)   if is_up else (38, 8, 8)
+        arrow  = "+" if is_up else "-"
         draw.rectangle([28, y-3, 556, y+26], fill=bg)
-        draw.text((35,  y), s["symbol"],               font=f_medium, fill=(255, 255, 255))
-        draw.text((155, y), f"\u20ae{s['price']}",     font=f_medium, fill=(195, 215, 255))
-        draw.text((330, y), f"{s['arrow']}{s['pct']}", font=f_medium, fill=color)
+        draw.text((35,  y), s["symbol"],                    font=f_medium, fill=(255, 255, 255))
+        draw.text((155, y), f"T{s['price']}",               font=f_medium, fill=(195, 215, 255))
+        draw.text((320, y), f"{arrow}{s['pct']}",           font=f_medium, fill=color)
         if s.get("vol"):
-            draw.text((440, y), fmt_vol(s["vol"]),     font=f_tiny,   fill=(150, 175, 220))
+            draw.text((430, y), fmt_vol(s["vol"]),          font=f_tiny,   fill=(150, 175, 220))
         y += 36
 
     # ── RIGHT: Assets ──
     rx = 605
-    draw.text((rx, 22), "ASSETS",               font=f_title, fill=(0, 220, 120))
-    draw.text((rx, 68), "Крипто | Металл | Валют", font=f_tiny, fill=(140, 170, 210))
-    draw.line([(rx, 100), (1170, 100)], fill=(0, 180, 100), width=2)
+    draw.text((rx, 22),  "ASSETS",                     font=f_title,  fill=(0, 220, 120))
+    draw.text((rx, 68),  "Crypto | Metals | Forex",     font=f_tiny,   fill=(140, 170, 210))
+    draw.line([(rx, 95), (1170, 95)], fill=(0, 180, 100), width=2)
 
     asset_rows = [
-        ("Bitcoin",  "BTC", assets.get("Bitcoin")),
-        ("Ethereum", "ETH", assets.get("Ethereum")),
-        ("Алт",      "Au",  assets.get("Алт")),
-        ("USD/MNT",  "USD", assets.get("USD/MNT")),
-        ("BNB",      "BNB", assets.get("BNB")),
-        ("Solana",   "SOL", assets.get("Solana")),
+        ("Bitcoin",   "BTC",  assets.get("Bitcoin")),
+        ("Ethereum",  "ETH",  assets.get("Ethereum")),
+        ("Gold",      "Au",   assets.get("Алт")),
+        ("USD/MNT",   "USD",  assets.get("USD/MNT")),
+        ("BNB",       "BNB",  assets.get("BNB")),
+        ("Solana",    "SOL",  assets.get("Solana")),
     ]
-    y = 112
+    y = 108
     for name, icon, data in asset_rows:
         if not data:
             continue
         is_up  = data.get("arrow") == "▲"
         color  = (0, 220, 120) if is_up else (255, 75, 75) if data.get("arrow") == "▼" else (175, 200, 235)
         bg     = (0, 33, 16)   if is_up else (33, 7, 7)    if data.get("arrow") == "▼" else (13, 22, 48)
+        arrow  = "+" if is_up else "-" if data.get("arrow") == "▼" else ""
         draw.rectangle([rx-2, y-3, 1172, y+28], fill=bg)
-        draw.text((rx,       y), f"{icon} {name}", font=f_medium, fill=(215, 230, 255))
-        draw.text((rx+190,   y), data["price"],    font=f_medium, fill=(255, 255, 255))
+        draw.text((rx,       y), f"{icon}  {name}",    font=f_medium, fill=(215, 230, 255))
+        draw.text((rx+200,   y), data["price"],         font=f_medium, fill=(255, 255, 255))
         if data.get("chg") != "—":
-            draw.text((rx+400, y), f"{data.get('arrow','')}{data.get('chg','')}", font=f_medium, fill=color)
+            draw.text((rx+410, y), f"{arrow}{data.get('chg','')}", font=f_medium, fill=color)
         y += 40
 
     # ── Bottom bar ──
     draw.rectangle([0, H-50, W, H], fill=(0, 145, 75))
-    draw.text((20,  H-36), "MGL NEWSROOM",                     font=f_large,  fill=(255, 255, 255))
-    draw.text((380, H-32), "Хөрөнгө оруулалтын зөвлөгөө биш", font=f_small,  fill=(200, 240, 210))
-    draw.text((840, H-32), "t.me/mglnewsroomfree",             font=f_medium, fill=(255, 255, 190))
+    draw.text((20,  H-36), "MGL NEWSROOM",                         font=f_large,  fill=(255, 255, 255))
+    draw.text((370, H-32), "Not investment advice",                 font=f_small,  fill=(200, 240, 210))
+    draw.text((760, H-32), "t.me/mglnewsroomfree",                 font=f_medium, fill=(255, 255, 190))
 
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=92)
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
     buf.seek(0)
     return buf.read()
 
