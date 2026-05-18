@@ -36,10 +36,34 @@ UB_OFFSET     = timedelta(hours=8)
 TELEGRAM_LINK = "https://t.me/mglnewsroomfree"
 FB_STATE_FILE = "fb_state.json"
 
+# ── COMPANY NAMES ─────────────────────────────────────────────────────────────
+COMPANY_NAMES = {
+    "AARD": "Ард Санхүү",
+    "ADB":  "Ардын банк",
+    "AIC":  "Ард Иншуранс",
+    "AMT":  "Ар Монгол Трейд",
+    "APU":  "АПУ ХК",
+    "BODI": "Боди Интернэшнл",
+    "CNF":  "Кан Файнанс",
+    "CUMN": "Камминс Монгол",
+    "ERDN": "Эрдэнэт Үйлдвэр",
+    "GAZR": "Газрын тос",
+    "GLMT": "Голомт Банк",
+    "KHAN": "ХААН Банк",
+    "MIK":  "МИК ХК",
+    "MSE":  "МХБ ХК",
+    "MNDL": "Мандал Даатгал",
+    "ORD":  "Ордер ХК",
+    "QPAY": "QPay ХК",
+    "SHV":  "Шивээ-Овоо",
+    "TDB":  "Худалдаа Хөгжлийн Банк",
+    "TTL":  "Тавантолгой ХК",
+    "XAC":  "ХАС Банк",
+    "MMRE": "Монгол Морин Эрдэнэ",
+}
+
 def now_ub():
     return datetime.now(timezone.utc) + UB_OFFSET
-
-# ── HELPERS ────────────────────────────────────────────────────────────────────
 def load_json(path, default):
     try:
         if os.path.exists(path):
@@ -118,7 +142,7 @@ def fetch_mse_data():
 def fetch_assets():
     assets = {}
 
-    # Crypto
+    # Crypto — Bitcoin and Ethereum
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price"
@@ -138,13 +162,22 @@ def fetch_assets():
     except Exception as e:
         print(f"[CRYPTO] {e}")
 
-    # Gold
+    # Metals — Gold and Silver
     try:
-        r     = requests.get("https://api.metals.live/v1/spot/gold", timeout=10)
-        d     = r.json()
+        r = requests.get("https://api.metals.live/v1/spot/gold", timeout=10)
+        d = r.json()
         price = d[0].get("price") if isinstance(d, list) else d.get("price")
         if price:
-            assets["Алт"] = {"price": f"${float(price):,.2f}/oz"}
+            assets["Алт"] = {"price": f"${float(price):,.2f}/oz", "arrow": "—", "chg": "—"}
+    except Exception:
+        pass
+
+    try:
+        r = requests.get("https://api.metals.live/v1/spot/silver", timeout=10)
+        d = r.json()
+        price = d[0].get("price") if isinstance(d, list) else d.get("price")
+        if price:
+            assets["Мөнгө"] = {"price": f"${float(price):,.2f}/oz", "arrow": "—", "chg": "—"}
     except Exception:
         pass
 
@@ -153,7 +186,9 @@ def fetch_assets():
         r     = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
         rates = r.json().get("rates", {})
         if rates.get("MNT"):
-            assets["USD/MNT"] = {"price": f"₮{rates['MNT']:,.0f}"}
+            assets["USD/MNT"] = {"price": f"₮{rates['MNT']:,.0f}", "arrow": "—", "chg": "—"}
+        if rates.get("CNY"):
+            assets["USD/CNY"] = {"price": f"¥{rates['CNY']:.4f}", "arrow": "—", "chg": "—"}
     except Exception:
         pass
 
@@ -216,7 +251,7 @@ def build_post_text(stocks, assets, index_val, intro):
     date_str = ub.strftime("%Y.%m.%d")
     lines    = []
 
-    # Intro
+    # Intro from Claude
     if intro:
         lines.append(intro)
         lines.append("")
@@ -225,9 +260,22 @@ def build_post_text(stocks, assets, index_val, intro):
     lines.append(f"МХБ-ийн арилжааны тойм | {date_str}")
     lines.append("")
 
-    # Top 2 highlight
-    if len(stocks) >= 2:
-        lines.append(f'"{stocks[0]["symbol"]}" болон "{stocks[1]["symbol"]}" — өнөөдрийн тэргүүлэгчид!')
+    # Top gainers and losers
+    gainers = [s for s in stocks if s["arrow"] == "▲"]
+    losers  = [s for s in stocks if s["arrow"] == "▼"]
+    top_gainer = gainers[0] if gainers else None
+    top_loser  = losers[0]  if losers  else None
+
+    if top_gainer:
+        name = COMPANY_NAMES.get(top_gainer["symbol"], top_gainer["symbol"])
+        lines.append(f"📈 Өнөөдрийн хамгийн өндөр өсөлт:")
+        lines.append(f"{name} ({top_gainer['symbol']}) — ▲{top_gainer['pct']} | ₮{top_gainer['price']}")
+        lines.append("")
+
+    if top_loser:
+        name = COMPANY_NAMES.get(top_loser["symbol"], top_loser["symbol"])
+        lines.append(f"📉 Өнөөдрийн хамгийн их уналт:")
+        lines.append(f"{name} ({top_loser['symbol']}) — ▼{top_loser['pct']} | ₮{top_loser['price']}")
         lines.append("")
 
     # Index
@@ -235,25 +283,46 @@ def build_post_text(stocks, assets, index_val, intro):
         lines.append(f"📊 МХБ ТОП-20 индекс: {index_val} нэгж")
         lines.append("")
 
-    # All 10 stocks
+    # All 10 stocks with company names
     lines.append(f"📋 МХБ-ийн 10 ЧУХАЛ ХУВЬЦАА | {date_str}")
     lines.append("")
     for s in stocks:
-        arrow = "📈" if s["arrow"] == "▲" else "📉"
-        lines.append(f"{arrow} {s['symbol']}  ₮{s['price']}  {s['arrow']}{s['pct']}")
+        arrow  = "📈" if s["arrow"] == "▲" else "📉"
+        name   = COMPANY_NAMES.get(s["symbol"], "")
+        label  = f"{s['symbol']} — {name}" if name else s["symbol"]
+        lines.append(f"{arrow} {label}")
+        lines.append(f"₮{s['price']} | {s['arrow']}{s['pct']}")
+        lines.append("")
+
+    # Assets section
+    lines.append("💰 Дэлхийн зах зээл:")
     lines.append("")
 
-    # Assets
-    btc = assets.get("Bitcoin", {}).get("price")
-    gold = assets.get("Алт", {}).get("price")
-    usd = assets.get("USD/MNT", {}).get("price")
+    btc  = assets.get("Bitcoin")
+    eth  = assets.get("Ethereum")
+    gold = assets.get("Алт")
+    silv = assets.get("Мөнгө")
+    usd  = assets.get("USD/MNT")
+    cny  = assets.get("USD/CNY")
 
-    if btc or gold or usd:
-        lines.append("💰 Зах зээлийн мэдээлэл:")
-        if btc:  lines.append(f"₿ Bitcoin: {btc}")
-        if gold: lines.append(f"🥇 Алт: {gold}")
-        if usd:  lines.append(f"💵 USD/MNT: {usd}")
-        lines.append("")
+    if btc:
+        arrow = btc.get("arrow", "")
+        chg   = btc.get("chg", "")
+        lines.append(f"₿ Bitcoin: {btc['price']} {arrow}{chg}")
+    if eth:
+        arrow = eth.get("arrow", "")
+        chg   = eth.get("chg", "")
+        lines.append(f"Ξ Ethereum: {eth['price']} {arrow}{chg}")
+    if gold:
+        lines.append(f"🥇 Алт: {gold['price']}")
+    if silv:
+        lines.append(f"🥈 Мөнгө: {silv['price']}")
+    if usd:
+        lines.append(f"💵 USD/MNT: {usd['price']}")
+    if cny:
+        lines.append(f"🇨🇳 USD/CNY: {cny['price']}")
+
+    lines.append("")
 
     # Footer
     lines += [
@@ -261,7 +330,7 @@ def build_post_text(stocks, assets, index_val, intro):
         "⚠️ Энэхүү мэдээлэл нь зөвхөн мэдээллийн зорилготой бөгөөд",
         "хөрөнгө оруулалтын зөвлөгөө биш болно.",
         "",
-        f"📲 Илүү их мэдээллийг {TELEGRAM_LINK} - ээс",
+        f"📲 Илүү их мэдээллийг {TELEGRAM_LINK} - ээс аваарай!",
         "",
         "#МХБ #MSE #хөрөнгөоруулалт #МонголынЗахЗээл #MGLNewsroom",
     ]
