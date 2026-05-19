@@ -211,13 +211,57 @@ def translate(text):
     except Exception:
         return text
 
-# ── CLAUDE — write engaging intro ─────────────────────────────────────────────
-def claude_intro(stocks, assets):
+# ── CLAUDE — write intro + full summary ───────────────────────────────────────
+def claude_content(stocks, assets):
     if not ANTHROPIC_KEY or not stocks:
-        return ""
+        return "", ""
     try:
-        top  = stocks[0]
-        date = now_ub().strftime("%Y.%m.%d")
+        date    = now_ub().strftime("%Y.%m.%d")
+        gainers = [s for s in stocks if s["arrow"] == "▲"]
+        losers  = [s for s in stocks if s["arrow"] == "▼"]
+
+        stock_lines = ""
+        for s in stocks[:10]:
+            name = COMPANY_NAMES.get(s["symbol"], s["symbol"])
+            pct  = s["pct"].replace("-", "").replace("+", "")
+            stock_lines += f"{s['symbol']} ({name}): ₮{s['price']} {s['arrow']}{pct}\n"
+
+        btc  = assets.get("Bitcoin",  {}).get("price", "N/A")
+        gold = assets.get("Алт",      {}).get("price", "N/A")
+        usd  = assets.get("USD/MNT",  {}).get("price", "N/A")
+        silv = assets.get("Мөнгө",    {}).get("price", "N/A")
+
+        prompt = (
+            f"You are a financial writer for a Mongolian stock market Facebook page.\n\n"
+            f"Today: {date}\n"
+            f"MSE stocks:\n{stock_lines}\n"
+            f"Bitcoin: {btc} | Gold: {gold} | Silver: {silv} | USD/MNT: {usd}\n"
+            f"Total gainers: {len(gainers)} | Total losers: {len(losers)}\n\n"
+            f"Write TWO things in English. Plain text only, no HTML tags:\n\n"
+
+            f"INTRO: Write 2 punchy engaging sentences to hook readers on Facebook. "
+            f"Mention the biggest mover. Use 1-2 emojis. No hashtags.\n\n"
+
+            f"SUMMARY: Write a detailed market summary with EXACTLY this structure:\n"
+            f"1. OVERALL MOOD: 1 sentence — was market bullish/bearish/mixed today? "
+            f"How many stocks rose vs fell?\n"
+            f"2. TOP GAINER EXPLANATION: 2 sentences — which company gained the most and why? "
+            f"What does this mean for investors?\n"
+            f"3. TOP LOSER EXPLANATION: 2 sentences — which company fell the most and why? "
+            f"Should investors be concerned?\n"
+            f"4. SECTOR ANALYSIS: 2 sentences — how did banking/mining/finance sectors perform today? "
+            f"Any notable patterns?\n"
+            f"5. GLOBAL CONNECTION: 1-2 sentences — how are Bitcoin/Gold/Dollar affecting "
+            f"the Mongolian market today?\n"
+            f"6. WATCH TOMORROW: 1-2 sentences — what should investors watch tomorrow? "
+            f"Which stocks look interesting?\n"
+            f"7. CLOSING TIP: 1 sentence — one practical tip for regular non-expert investors.\n\n"
+            f"Total summary: 8-10 sentences. Simple language for non-finance people. No hashtags.\n\n"
+            f"Format exactly:\n"
+            f"INTRO: [2 sentences]\n"
+            f"SUMMARY: [full summary following the 7-point structure above]"
+        )
+
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -227,31 +271,45 @@ def claude_intro(stocks, assets):
             },
             json={
                 "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 120,
-                "messages":   [{
-                    "role":    "user",
-                    "content": (
-                        f"Write 2 engaging sentences for a Mongolian stock market "
-                        f"Facebook post intro for {date}. "
-                        f"Top stock: {top['symbol']} ₮{top['price']} {top['arrow']}{top['pct']}. "
-                        f"Use 1-2 emojis. Professional but exciting. English only. No hashtags."
-                    )
-                }]
-            }, timeout=20
+                "max_tokens": 700,
+                "messages":   [{"role": "user", "content": prompt}]
+            }, timeout=30
         )
-        intro_en = r.json()["content"][0]["text"].strip()
-        return translate(intro_en)
+        raw     = r.json()["content"][0]["text"].strip()
+        intro   = ""
+        summary = ""
+        current = None
+
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.startswith("INTRO:"):
+                intro   = line.replace("INTRO:", "").strip()
+                current = "intro"
+            elif line.startswith("SUMMARY:"):
+                summary = line.replace("SUMMARY:", "").strip()
+                current = "summary"
+            elif line and current == "intro":
+                intro   += " " + line
+            elif line and current == "summary":
+                summary += " " + line
+
+        # Translate both to Mongolian
+        intro_mn   = translate(intro.strip())   if intro   else ""
+        summary_mn = translate(summary.strip()) if summary else ""
+
+        return intro_mn, summary_mn
+
     except Exception as e:
         print(f"[CLAUDE] {e}")
-        return ""
+        return "", ""
 
 # ── BUILD POST TEXT ────────────────────────────────────────────────────────────
-def build_post_text(stocks, assets, index_val, intro):
+def build_post_text(stocks, assets, index_val, intro, summary):
     ub       = now_ub()
     date_str = ub.strftime("%Y.%m.%d")
     lines    = []
 
-    # Intro from Claude
+    # Intro
     if intro:
         lines.append(intro)
         lines.append("")
@@ -260,22 +318,24 @@ def build_post_text(stocks, assets, index_val, intro):
     lines.append(f"МХБ-ийн арилжааны тойм | {date_str}")
     lines.append("")
 
-    # Top gainers and losers
+    # Top gainer and loser
     gainers = [s for s in stocks if s["arrow"] == "▲"]
     losers  = [s for s in stocks if s["arrow"] == "▼"]
-    top_gainer = gainers[0] if gainers else None
-    top_loser  = losers[0]  if losers  else None
 
-    if top_gainer:
-        name = COMPANY_NAMES.get(top_gainer["symbol"], top_gainer["symbol"])
+    if gainers:
+        top = gainers[0]
+        name = COMPANY_NAMES.get(top["symbol"], top["symbol"])
+        pct  = top["pct"].replace("-", "").replace("+", "")
         lines.append(f"📈 Өнөөдрийн хамгийн өндөр өсөлт:")
-        lines.append(f"{name} ({top_gainer['symbol']}) — ▲{top_gainer['pct']} | ₮{top_gainer['price']}")
+        lines.append(f"{name} ({top['symbol']}) — ▲{pct} | ₮{top['price']}")
         lines.append("")
 
-    if top_loser:
-        name = COMPANY_NAMES.get(top_loser["symbol"], top_loser["symbol"])
+    if losers:
+        top  = losers[0]
+        name = COMPANY_NAMES.get(top["symbol"], top["symbol"])
+        pct  = top["pct"].replace("-", "").replace("+", "")
         lines.append(f"📉 Өнөөдрийн хамгийн их уналт:")
-        lines.append(f"{name} ({top_loser['symbol']}) — ▼{top_loser['pct']} | ₮{top_loser['price']}")
+        lines.append(f"{name} ({top['symbol']}) — ▼{pct} | ₮{top['price']}")
         lines.append("")
 
     # Index
@@ -287,17 +347,17 @@ def build_post_text(stocks, assets, index_val, intro):
     lines.append(f"📋 МХБ-ийн 10 ЧУХАЛ ХУВЬЦАА | {date_str}")
     lines.append("")
     for s in stocks:
-        arrow  = "📈" if s["arrow"] == "▲" else "📉"
-        name   = COMPANY_NAMES.get(s["symbol"], "")
-        label  = f"{s['symbol']} — {name}" if name else s["symbol"]
+        arrow = "📈" if s["arrow"] == "▲" else "📉"
+        name  = COMPANY_NAMES.get(s["symbol"], "")
+        label = f"{s['symbol']} — {name}" if name else s["symbol"]
+        pct   = s["pct"].replace("-", "").replace("+", "")
         lines.append(f"{arrow} {label}")
-        lines.append(f"₮{s['price']} | {s['arrow']}{s['pct']}")
+        lines.append(f"₮{s['price']} | {s['arrow']}{pct}")
         lines.append("")
 
-    # Assets section
+    # Assets
     lines.append("💰 Дэлхийн зах зээл:")
     lines.append("")
-
     btc  = assets.get("Bitcoin")
     eth  = assets.get("Ethereum")
     gold = assets.get("Алт")
@@ -306,23 +366,23 @@ def build_post_text(stocks, assets, index_val, intro):
     cny  = assets.get("USD/CNY")
 
     if btc:
-        arrow = btc.get("arrow", "")
-        chg   = btc.get("chg", "")
-        lines.append(f"₿ Bitcoin: {btc['price']} {arrow}{chg}")
+        chg = btc.get("chg", "")
+        lines.append(f"₿ Bitcoin: {btc['price']} {btc.get('arrow','')+chg}")
     if eth:
-        arrow = eth.get("arrow", "")
-        chg   = eth.get("chg", "")
-        lines.append(f"Ξ Ethereum: {eth['price']} {arrow}{chg}")
-    if gold:
-        lines.append(f"🥇 Алт: {gold['price']}")
-    if silv:
-        lines.append(f"🥈 Мөнгө: {silv['price']}")
-    if usd:
-        lines.append(f"💵 USD/MNT: {usd['price']}")
-    if cny:
-        lines.append(f"🇨🇳 USD/CNY: {cny['price']}")
-
+        chg = eth.get("chg", "")
+        lines.append(f"Ξ Ethereum: {eth['price']} {eth.get('arrow','')+chg}")
+    if gold: lines.append(f"🥇 Алт: {gold['price']}")
+    if silv: lines.append(f"🥈 Мөнгө: {silv['price']}")
+    if usd:  lines.append(f"💵 USD/MNT: {usd['price']}")
+    if cny:  lines.append(f"🇨🇳 USD/CNY: {cny['price']}")
     lines.append("")
+
+    # AI Summary
+    if summary:
+        lines.append("📝 Өнөөдрийн зах зээлийн товч тойм:")
+        lines.append("")
+        lines.append(summary)
+        lines.append("")
 
     # Footer
     lines += [
@@ -437,8 +497,8 @@ def run_daily_fb_post():
 
     stocks, index_val = fetch_mse_data()
     assets            = fetch_assets()
-    intro             = claude_intro(stocks, assets)
-    post_text         = build_post_text(stocks, assets, index_val, intro)
+    intro, summary    = claude_content(stocks, assets)
+    post_text         = build_post_text(stocks, assets, index_val, intro, summary)
 
     print(f"[FB] Stocks: {len(stocks)}, Assets: {len(assets)}")
     print(f"[FB] Post length: {len(post_text)} chars")
