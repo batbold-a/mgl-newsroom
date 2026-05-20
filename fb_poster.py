@@ -398,16 +398,17 @@ def build_post_text(stocks, assets, index_val, intro, summary):
     return "\n".join(lines)
 
 # ── POST TO FACEBOOK VIA MAKE.COM WEBHOOK ─────────────────────────────────────
-def post_via_make(message):
+def post_via_make(message, image_bytes=None):
     if not MAKE_WEBHOOK_URL:
         print("[MAKE] MAKE_WEBHOOK_URL missing!")
         return False
     try:
-        r = requests.post(
-            MAKE_WEBHOOK_URL,
-            json={"message": message},
-            timeout=30
-        )
+        import base64
+        payload = {"message": message}
+        if image_bytes:
+            payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+
+        r = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=30)
         if r.status_code == 200:
             print(f"[MAKE] ✅ Sent to Make.com!")
             return True
@@ -418,7 +419,7 @@ def post_via_make(message):
         return False
 
 # ── TELEGRAM APPROVAL ──────────────────────────────────────────────────────────
-def send_for_approval(post_text, stocks):
+def send_for_approval(post_text, stocks, image_bytes=None):
     state = load_json(FB_STATE_FILE, {})
     top   = stocks[0] if stocks else {}
 
@@ -428,7 +429,7 @@ def send_for_approval(post_text, stocks):
         f"📊 Топ: <b>{top.get('symbol','')}</b> "
         f"₮{top.get('price','')} {top.get('arrow','')+top.get('pct','')}\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"{post_text[:800]}\n"
+        f"{post_text[:600]}\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"Нийтлэх үү?"
     )
@@ -437,7 +438,26 @@ def send_for_approval(post_text, stocks):
         {"text": "❌ Алгасах",            "callback_data": "fb_skip"},
     ]]}
 
-    result = tg_send(ADMIN_CHAT_ID, preview, markup)
+    # Send image preview if available, otherwise text
+    if image_bytes:
+        try:
+            payload = {
+                "chat_id":    ADMIN_CHAT_ID,
+                "caption":    preview[:1024],
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(markup),
+            }
+            files  = {"photo": ("preview.jpg", image_bytes, "image/jpeg")}
+            result = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                data=payload, files=files, timeout=30
+            ).json()
+        except Exception as e:
+            print(f"[TG PHOTO] {e}")
+            result = tg_send(ADMIN_CHAT_ID, preview, markup)
+    else:
+        result = tg_send(ADMIN_CHAT_ID, preview, markup)
+
     state["pending"] = {
         "date":           now_ub().strftime("%Y-%m-%d"),
         "post_text":      post_text,
@@ -446,7 +466,7 @@ def send_for_approval(post_text, stocks):
     save_json(FB_STATE_FILE, state)
     print("[FB] Preview sent — waiting for your approval")
 
-def handle_fb_updates(post_text):
+def handle_fb_updates(post_text, image_bytes=None):
     state  = load_json(FB_STATE_FILE, {})
     offset = state.get("tg_offset", 0)
     resp   = tg("getUpdates", {"offset": offset, "timeout": 5})
@@ -471,7 +491,7 @@ def handle_fb_updates(post_text):
 
         if data == "fb_approve":
             tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": "✅ Нийтэлж байна..."})
-            success = post_via_make(post_text)
+            success = post_via_make(post_text, image_bytes)
             msg     = "✅ Make.com-оор Facebook-т илгээгдлээ!" if success else "❌ Make.com алдаа гарлаа!"
             tg_send(ADMIN_CHAT_ID, msg)
             state.pop("pending", None)
@@ -501,14 +521,22 @@ def run_daily_fb_post():
     post_text         = build_post_text(stocks, assets, index_val, intro, summary)
 
     print(f"[FB] Stocks: {len(stocks)}, Assets: {len(assets)}")
-    print(f"[FB] Post length: {len(post_text)} chars")
 
-    send_for_approval(post_text, stocks)
+    # Generate image
+    image_bytes = None
+    try:
+        from image_gen import generate_image
+        image_bytes = generate_image(stocks, assets, index_val)
+        print(f"[FB] Image: {'✅' if image_bytes else '❌ failed — posting text only'}")
+    except Exception as e:
+        print(f"[FB] Image generation skipped: {e}")
+
+    send_for_approval(post_text, stocks, image_bytes)
 
     # Wait up to 2 hours for approval
     deadline = time.time() + 7200
     while time.time() < deadline:
-        result = handle_fb_updates(post_text)
+        result = handle_fb_updates(post_text, image_bytes)
         if result in ("posted", "skipped", "failed"):
             return
         time.sleep(15)
@@ -517,7 +545,7 @@ def run_daily_fb_post():
 
 def main():
     print("=" * 50)
-    print("MGL Newsroom — Facebook Auto Poster (Text Only)")
+    print("MGL Newsroom — Facebook Auto Poster")
     print(f"  Webhook : {'✅' if MAKE_WEBHOOK_URL else '❌ MISSING — add MAKE_WEBHOOK_URL'}")
     print(f"  Bot     : {'✅' if BOT_TOKEN        else '❌ MISSING'}")
     print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ MISSING'}")

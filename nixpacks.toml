@@ -1,5 +1,9 @@
 [phases.setup]
-nixPkgs = ["fonts-noto", "fontconfig"]
+nixPkgs = ["fontconfig", "freetype"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+  "pip install -r requirements.txt",
+  "playwright install chromium",
+  "playwright install-deps chromium"
+]
