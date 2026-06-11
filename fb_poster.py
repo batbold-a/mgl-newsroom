@@ -1,18 +1,18 @@
 """
-MGL Newsroom — Facebook Auto Poster (Text Only)
+MGL Newsroom — Facebook Auto Poster
 =================================================
 - Fetches MSE + crypto + gold + forex data daily
-- Claude writes post, Google Translate to Mongolian
+- Gemini 2.5 Flash writes post AND translates to Mongolian
+- Generates branded MGL Newsroom infographic image
 - Sends YOU Telegram preview with ✅ Post / ❌ Skip
-- Posts to Facebook via Make.com webhook (no image)
+- Posts to Facebook via Make.com webhook
 - Runs at 15:30 UB daily after MSE closes
 
 Env vars needed:
-  MAKE_WEBHOOK_URL    — from Make.com scenario
-  BOT_TOKEN           — same as bot.py
-  ADMIN_CHAT_ID       — same as bot.py
-  ANTHROPIC_API_KEY   — same as bot.py
-  GOOGLE_TRANSLATE_KEY — same as bot.py
+  MAKE_WEBHOOK_URL  — from Make.com scenario
+  BOT_TOKEN         — same as bot.py
+  ADMIN_CHAT_ID     — same as bot.py
+  GEMINI_API_KEY    — from aistudio.google.com/apikey (free)
 
 Run daily: python fb_poster.py
 Test now:  python fb_poster.py --now
@@ -29,8 +29,7 @@ from datetime import datetime, timezone, timedelta
 MAKE_WEBHOOK_URL = os.environ.get("MAKE_WEBHOOK_URL")
 BOT_TOKEN        = os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID    = os.environ.get("ADMIN_CHAT_ID")
-ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY")
-GOOGLE_TRANSLATE = os.environ.get("GOOGLE_TRANSLATE_KEY")
+GEMINI_KEY       = os.environ.get("GEMINI_API_KEY")
 
 UB_OFFSET     = timedelta(hours=8)
 TELEGRAM_LINK = "https://t.me/mglnewsroomfree"
@@ -194,26 +193,36 @@ def fetch_assets():
 
     return assets
 
-# ── GOOGLE TRANSLATE ───────────────────────────────────────────────────────────
-def translate(text):
-    if not GOOGLE_TRANSLATE or not text:
-        return text
+# ── GEMINI — Translation + Writing ────────────────────────────────────────────
+def gemini(prompt, max_tokens=700):
+    """Call Gemini 2.5 Flash."""
+    if not GEMINI_KEY:
+        return None
     try:
         r = requests.post(
-            "https://translation.googleapis.com/language/translate/v2",
-            params={"key": GOOGLE_TRANSLATE},
-            json={"q": text, "target": "mn", "format": "text"}, timeout=10
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=30
         )
         result = r.json()
-        if "error" in result:
-            return text
-        return result["data"]["translations"][0]["translatedText"]
-    except Exception:
-        return text
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"[GEMINI ERROR] {e}")
+        return None
 
-# ── CLAUDE — write intro + full summary ───────────────────────────────────────
-def claude_content(stocks, assets):
-    if not ANTHROPIC_KEY or not stocks:
+def translate(text):
+    """Translate English to Mongolian using Gemini."""
+    if not GEMINI_KEY or not text:
+        return text
+    result = gemini(
+        f"Translate to Mongolian. Return only the translation, nothing else:\n\n{text}",
+        max_tokens=400
+    )
+    return result if result else text
+
+# ── GEMINI — write intro + full summary ───────────────────────────────────────
+def gemini_content(stocks, assets):
+    if not GEMINI_KEY or not stocks:
         return "", ""
     try:
         date    = now_ub().strftime("%Y.%m.%d")
@@ -262,20 +271,7 @@ def claude_content(stocks, assets):
             f"SUMMARY: [full summary following the 7-point structure above]"
         )
 
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json",
-            },
-            json={
-                "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 700,
-                "messages":   [{"role": "user", "content": prompt}]
-            }, timeout=30
-        )
-        raw     = r.json()["content"][0]["text"].strip()
+        raw = gemini(prompt, max_tokens=900) or ""
         intro   = ""
         summary = ""
         current = None
@@ -300,7 +296,7 @@ def claude_content(stocks, assets):
         return intro_mn, summary_mn
 
     except Exception as e:
-        print(f"[CLAUDE] {e}")
+        print(f"[GEMINI] {e}")
         return "", ""
 
 # ── BUILD POST TEXT ────────────────────────────────────────────────────────────
@@ -517,7 +513,7 @@ def run_daily_fb_post():
 
     stocks, index_val = fetch_mse_data()
     assets            = fetch_assets()
-    intro, summary    = claude_content(stocks, assets)
+    intro, summary    = gemini_content(stocks, assets)
     post_text         = build_post_text(stocks, assets, index_val, intro, summary)
 
     print(f"[FB] Stocks: {len(stocks)}, Assets: {len(assets)}")
@@ -548,8 +544,7 @@ def main():
     print("MGL Newsroom — Facebook Auto Poster")
     print(f"  Webhook : {'✅' if MAKE_WEBHOOK_URL else '❌ MISSING — add MAKE_WEBHOOK_URL'}")
     print(f"  Bot     : {'✅' if BOT_TOKEN        else '❌ MISSING'}")
-    print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ MISSING'}")
-    print(f"  Google  : {'✅' if GOOGLE_TRANSLATE else '❌ MISSING'}")
+    print(f"  Gemini  : {'✅' if GEMINI_KEY else '❌ MISSING'}")
     print("=" * 50)
     print("Posts at 15:30 UB daily.\n")
 

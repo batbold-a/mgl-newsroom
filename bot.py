@@ -40,8 +40,7 @@ FREE_CHANNEL     = os.environ.get("FREE_CHANNEL",    "@mglnewsroomfree")
 PREMIUM_CHANNEL  = os.environ.get("PREMIUM_CHANNEL", "-1003833538418")
 ADMIN_CHAT_ID    = os.environ.get("ADMIN_CHAT_ID")
 ADMIN_ID         = int(os.environ.get("ADMIN_ID", os.environ.get("ADMIN_CHAT_ID", "0")))
-ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY")
-GOOGLE_TRANSLATE = os.environ.get("GOOGLE_TRANSLATE_KEY")
+GEMINI_KEY       = os.environ.get("GEMINI_API_KEY")
 PREMIUM_INVITE   = "https://t.me/+BxQ8PEdcyc02YmM9"
 
 BANK_ACCOUNT   = os.environ.get("BANK_ACCOUNT",  "1234567890")
@@ -771,27 +770,38 @@ def fetch_assets():
     print(f"[ASSETS] ✅ Total: {len(assets)} assets fetched")
     return assets
 
-# ── GOOGLE TRANSLATE ───────────────────────────────────────────────────────────
-def translate(text):
-    if not GOOGLE_TRANSLATE or not text:
-        return text
+# ── GEMINI — Translation + Writing ────────────────────────────────────────────
+def gemini(prompt, max_tokens=500):
+    """Call Gemini 2.5 Flash — handles both writing and translation."""
+    if not GEMINI_KEY:
+        return None
     try:
         r = requests.post(
-            "https://translation.googleapis.com/language/translate/v2",
-            params={"key": GOOGLE_TRANSLATE},
-            json={"q": text, "target": "mn", "format": "text"}, timeout=10
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=30
         )
         result = r.json()
-        if "error" in result:
-            return text
-        return result["data"]["translations"][0]["translatedText"]
-    except Exception:
-        return text
-
-# ── CLAUDE AI ──────────────────────────────────────────────────────────────────
-def claude_write(title, summary, source, day_context, is_mn_source=False):
-    if not ANTHROPIC_KEY:
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"[GEMINI ERROR] {e}")
         return None
+
+def translate(text):
+    """Translate English to Mongolian using Gemini."""
+    if not GEMINI_KEY or not text:
+        return text
+    result = gemini(
+        f"Translate to Mongolian. Return only the translation, nothing else:\n\n{text}"
+    )
+    return result if result else text
+
+# ── GEMINI — News Article Writer ──────────────────────────────────────────────
+def claude_write(title, summary, source, day_context, is_mn_source=False):
+    """Write financial news analysis using Gemini 2.5 Flash."""
+    if not GEMINI_KEY:
+        return None
+
     prompt = f"""You are a financial news editor for a Mongolian investment newsletter.
 
 ACCEPT and write analysis for articles about:
@@ -820,30 +830,9 @@ SUMMARY: [2-3 sentences. What happened, why it matters.]
 MONGOLIA_IMPACT: [1-2 sentences. Specific impact on Mongolian investors.]
 RECOMMENDATION: [1 sentence practical observation. End with: This is not investment advice.]
 
-IMPORTANT: Never use HTML tags like <div>, <p>, <br>, <b>, <i> or any other tags. Plain text only."""
+IMPORTANT: Never use HTML tags. Plain text only."""
 
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json",
-            },
-            json={
-                "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 500,
-                "messages":   [{"role": "user", "content": prompt}]
-            }, timeout=30
-        )
-        result = r.json()
-        if "error" in result:
-            print(f"[CLAUDE ERROR] {result['error']}")
-            return None
-        return result["content"][0]["text"].strip()
-    except Exception as e:
-        print(f"[CLAUDE ERROR] {e}")
-        return None
+    return gemini(prompt)
 
 def strip_html(text):
     """Remove any HTML tags Claude accidentally includes."""
@@ -1497,7 +1486,7 @@ def check_watchlist_alerts():
 
             # Get AI comment
             ai_comment = ""
-            if ANTHROPIC_KEY:
+            if GEMINI_KEY:
                 try:
                     prompt = (
                         f"Write 2 sentences in Mongolian explaining why {item} "
@@ -1505,22 +1494,7 @@ def check_watchlist_alerts():
                         f"Be specific about what this means for investors. "
                         f"End with: Хөрөнгө оруулалтын зөвлөгөө биш."
                     )
-                    r = requests.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "x-api-key":         ANTHROPIC_KEY,
-                            "anthropic-version": "2023-06-01",
-                            "content-type":      "application/json",
-                        },
-                        json={
-                            "model":      "claude-haiku-4-5-20251001",
-                            "max_tokens": 150,
-                            "messages":   [{"role": "user", "content": prompt}]
-                        }, timeout=15
-                    )
-                    ai_comment = r.json()["content"][0]["text"].strip()
-                    # Translate to Mongolian
-                    ai_comment = translate(ai_comment)
+                    ai_comment = gemini(prompt) or ""
                 except Exception:
                     pass
 
@@ -1602,7 +1576,7 @@ def post_weekly_outlook():
     # Claude writes full analysis in English
     full_en = ""
     brief_en = ""
-    if ANTHROPIC_KEY:
+    if GEMINI_KEY:
         try:
             prompt = (
                 f"You are a financial analyst writing a weekly market outlook for Mongolian investors.\n\n"
@@ -1623,32 +1597,16 @@ def post_weekly_outlook():
                 f"- End with: Full analysis in Premium channel.\n\n"
                 f"Plain text only. No HTML tags."
             )
-            r = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key":         ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type":      "application/json",
-                },
-                json={
-                    "model":      "claude-haiku-4-5-20251001",
-                    "max_tokens": 1000,
-                    "messages":   [{"role": "user", "content": prompt}]
-                }, timeout=30
-            )
-            raw = r.json()["content"][0]["text"].strip()
-
-            # Split full and brief
+            raw = gemini(prompt, max_tokens=1000) or ""
             if "BRIEF:" in raw:
-                parts    = raw.split("BRIEF:")
+                parts   = raw.split("BRIEF:")
                 full_en  = parts[0].replace("FULL:", "").strip()
                 brief_en = parts[1].strip()
             else:
                 full_en  = raw
                 brief_en = raw[:300]
-
         except Exception as e:
-            print(f"[WEEKLY CLAUDE] {e}")
+            print(f"[WEEKLY GEMINI] {e}")
 
     # Translate both
     full_mn  = translate(full_en)  if full_en  else ""
@@ -1807,8 +1765,7 @@ def main():
     print(f"  Free    : {FREE_CHANNEL}")
     print(f"  Premium : {PREMIUM_CHANNEL}")
     print(f"  Admin   : {ADMIN_CHAT_ID}")
-    print(f"  Claude  : {'✅' if ANTHROPIC_KEY    else '❌ missing'}")
-    print(f"  Google  : {'✅' if GOOGLE_TRANSLATE else '❌ missing'}")
+    print(f"  Gemini  : {'✅' if GEMINI_KEY else '❌ missing'}")
     print(f"  Bank    : {BANK_NAME} — {BANK_ACCOUNT}")
     print(f"  Price   : ₮{PRICE_MONTHLY:,}/сар | ₮{PRICE_YEARLY:,}/жил")
     print("=" * 55)
